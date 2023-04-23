@@ -113,20 +113,22 @@ class CmdlineTmpl(BaseTmpl):
             try:
                 result = subprocess.run(cmd_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
             except subprocess.TimeoutExpired as e:
+                logging.error("Timeout!")
                 logging.error(f"stdout: {e.stdout}")
                 logging.error(f"stderr: {e.stderr}")
                 raise e
         if not (success ^ (result.returncode != 0)):
-            logging.error(f"stdout: {result.stdout.decode('utf-8')}")
-            logging.error(f"stderr: {result.stderr.decode('utf-8')}")
+            logging.error(f"return code: {result.returncode}")
+            logging.error(f"stdout:\n{result.stdout.decode('utf-8')}")
+            logging.error(f"stderr:\n{result.stderr.decode('utf-8')}")
         self.assertTrue(success ^ (result.returncode != 0))
         if success:
             if expected_output_file:
                 if type(expected_output_file) is list:
                     for f in expected_output_file:
-                        self.assertTrue(os.path.exists(f))
+                        self.assertFileExists(f)
                 elif type(expected_output_file) is str:
-                    self.assertTrue(os.path.exists(expected_output_file))
+                    self.assertFileExists(expected_output_file)
 
             if expected_entries:
                 assert (type(expected_output_file) is str and expected_output_file.split(".")[-1] == "json")

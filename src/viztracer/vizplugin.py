@@ -22,7 +22,7 @@ class VizPluginError(Exception):
 # by VizTracer(plugins=[YourVizPlugin()])
 
 class VizPluginBase:
-    def __init__(self):
+    def __init__(self) -> None:
         pass
 
     def support_version(self) -> str:
@@ -63,6 +63,11 @@ class VizPluginManager:
             else:
                 raise TypeError("Invalid plugin!")
             self._plugins.append(plugin_instance)
+
+            support_version = plugin_instance.support_version()
+            if compare_version(support_version, __version__) > 0:
+                color_print("WARNING", "The plugin support version is higher than "
+                                       "viztracer version. Consider update your viztracer")
             self._send_message(plugin_instance, "event", {"when": "initialize"})
 
     def _get_plugin_from_string(self, plugin: str) -> VizPluginBase:
@@ -102,15 +107,16 @@ class VizPluginManager:
         # in the future we may need to do version compatibility
         # here
         support_version = plugin.support_version()
-        if compare_version(support_version, __version__) > 0:
-            color_print("WARNING", "The plugin support version is higher than "
-                                   "viztracer version. Consider update your viztracer")
 
         ret = plugin.message(m_type, payload)
         if m_type == "command":
             self.assert_success(plugin, payload, ret)
         else:
             self.resolve(support_version, ret)
+
+    @property
+    def has_plugin(self) -> bool:
+        return len(self._plugins) > 0
 
     def event(self, when: str) -> None:
         for plugin in self._plugins:

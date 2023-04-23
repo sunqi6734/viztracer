@@ -4,6 +4,7 @@
 
 from viztracer import VizTracer
 from viztracer.attach_process.add_code_to_python_process import run_python_code  # type: ignore
+from viztracer.util import pid_exists
 import base64
 import json
 import os
@@ -19,6 +20,7 @@ from .cmdline_tmpl import CmdlineTmpl
 from .util import cmd_with_coverage
 
 
+@unittest.skipIf(sys.platform == "darwin" and sys.version_info >= (3, 11), "Does not support 3.11+ on Mac")
 class TestRemote(CmdlineTmpl):
     @unittest.skipIf(sys.platform == "win32", "Does not support on Windows")
     def test_install(self):
@@ -27,7 +29,7 @@ class TestRemote(CmdlineTmpl):
         os.kill(os.getpid(), signal.SIGUSR1)
         time.sleep(0.1)
         os.kill(os.getpid(), signal.SIGUSR2)
-        self.assertTrue(os.path.exists("remote.json"))
+        self.assertFileExists("remote.json")
         os.remove("remote.json")
 
     @unittest.skipIf(sys.platform == "win32", "Does not support on Windows")
@@ -216,6 +218,7 @@ class TestRemote(CmdlineTmpl):
         self.template(["viztracer", "--uninstall", "1234"], success=False)
 
 
+@unittest.skipIf(sys.platform == "darwin" and sys.version_info >= (3, 11), "Does not support 3.11+ on Mac")
 class TestAttachSanity(CmdlineTmpl):
     @unittest.skipIf(sys.platform == "win32", "Can't run attach on Windows")
     def test_basic(self):
@@ -245,6 +248,7 @@ class TestAttachSanity(CmdlineTmpl):
             os.remove("attached_script.py")
 
 
+@unittest.skipIf(sys.platform == "darwin" and sys.version_info >= (3, 11), "Does not support 3.11+ on Mac")
 class TestAttachScript(CmdlineTmpl):
     def test_attach_script(self):
         # Isolate the attach stuff in a separate process
@@ -254,17 +258,17 @@ class TestAttachScript(CmdlineTmpl):
         kwargs_non_exist_b64 = base64.urlsafe_b64encode(json.dumps(kwargs_non_exist).encode("ascii")).decode("ascii")
         attach_script = textwrap.dedent(f"""
             import viztracer.attach
-            print(viztracer.attach.attach_status["created_tracer"], flush=True)
+            print(viztracer.attach.attach_status.created_tracer, flush=True)
             viztracer.attach.start_attach(\"{kwargs_b64}\")
-            print(viztracer.attach.attach_status["created_tracer"], flush=True)
+            print(viztracer.attach.attach_status.created_tracer, flush=True)
             viztracer.attach.start_attach(\"{kwargs_b64}\")
             a = []
             a.append(1)
             viztracer.attach.stop_attach()
-            print(viztracer.attach.attach_status["created_tracer"], flush=True)
+            print(viztracer.attach.attach_status.created_tracer, flush=True)
             viztracer.attach.start_attach(\"{kwargs_non_exist_b64}\")
             viztracer.attach.uninstall_attach()
-            print(viztracer.attach.attach_status["created_tracer"], flush=True)
+            print(viztracer.attach.attach_status.created_tracer, flush=True)
         """)
 
         self.template(["python", "cmdline_test.py"],
@@ -275,3 +279,12 @@ class TestAttachScript(CmdlineTmpl):
         if os.path.exists("non_exist.json"):
             os.remove("non_exist.json")
             self.fail("uninstall failed to prevent tracer from saving data")
+
+
+@unittest.skipUnless(sys.platform == "darwin" and sys.version_info >= (3, 11), "Does not support 3.11+ on Mac")
+class TestMacWarning(CmdlineTmpl):
+    def test_mac_warning(self):
+        pid = 12345
+        while pid_exists(pid):
+            pid += 1
+        self.template(["viztracer", "--attach", str(pid)], success=False, expected_stdout=".*Warning.*")

@@ -43,7 +43,7 @@ class VizTracer(_VizTracer):
                  dump_raw: bool = False,
                  sanitize_function_name: bool = False,
                  output_file: str = "result.json",
-                 plugins: Sequence[Union[VizPluginBase, str]] = []):
+                 plugins: Sequence[Union[VizPluginBase, str]] = []) -> None:
         super().__init__(
             tracer_entries=tracer_entries,
             max_stack_depth=max_stack_depth,
@@ -211,13 +211,15 @@ class VizTracer(_VizTracer):
             enabled = True
             self.stop()
 
-        self._plugin_manager.event("pre-save")
-
-        if self.dump_raw:
+        # If there are plugins, we can't do dump raw because it will skip the data
+        # manipulation phase
+        if not self._plugin_manager.has_plugin and self.dump_raw:
             self.dump(output_file, sanitize_function_name=self.sanitize_function_name)
         else:
             if not self.parsed:
                 self.parse()
+
+            self._plugin_manager.event("pre-save")
 
             rb = ReportBuilder(self.data, verbose, minimize_memory=self.minimize_memory)
             rb.save(output_file=output_file, file_info=file_info)

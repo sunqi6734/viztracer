@@ -38,7 +38,7 @@ class ReportBuilder:
             data: Union[Sequence[str], Dict],
             verbose: int = 1,
             align: bool = False,
-            minimize_memory: bool = False):
+            minimize_memory: bool = False) -> None:
         self.data = data
         self.verbose = verbose
         self.combined_json: Dict = {}
@@ -208,4 +208,7 @@ class ReportBuilder:
                 elif msg_type == "view_command":
                     report_abspath = os.path.abspath(msg_args["output_file"])
                     print("Use the following command to open the report:")
-                    color_print("OKGREEN", "vizviewer {}".format(report_abspath))
+                    if " " in report_abspath:
+                        color_print("OKGREEN", "vizviewer \"{}\"".format(report_abspath))
+                    else:
+                        color_print("OKGREEN", "vizviewer {}".format(report_abspath))

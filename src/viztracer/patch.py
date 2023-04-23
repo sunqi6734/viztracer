@@ -1,6 +1,7 @@
 # Licensed under the Apache License: http://www.apache.org/licenses/LICENSE-2.0
 # For details: https://github.com/gaogaotiantian/viztracer/blob/master/NOTICE.txt
 
+from __future__ import annotations
 
 import functools
 from multiprocessing import Process
@@ -8,40 +9,72 @@ import os
 import re
 import sys
 import textwrap
-from typing import Any, Callable, Dict, List, Sequence, Union
+from typing import Any, Callable, Dict, List, Sequence, Union, no_type_check
 
 from .viztracer import VizTracer
 
 
-def patch_subprocess(viz_args) -> None:
+def patch_subprocess(viz_args: list[str]) -> None:
+    import shlex
     import subprocess
 
+    # Try to detect the end of the python argument list and parse out various invocation patterns:
+    # `file.py args` | - args | `-- file.py args` | `-cprint(5) args` | `-Esm mod args`
+    py_arg_pat = re.compile("([^-].+)|-$|(--)$|-([a-z]+)?(c|m)(.+)?", re.IGNORECASE)
+    # Note: viztracer doesn't really work in interactive mode and arg handling is weird.
+    # Unlikely to be used in practice anyway so we just skip wrapping interactive python processes.
+    interactive_pat = re.compile("-[A-Za-z]*?i[A-Za-z]*$")
+
+    def build_command(args: Sequence[str]) -> list[str] | None:
+        py_args: list[str] = []
+        mode = []
+        script = None
+        args_iter = iter(args[1:])
+        for arg in args_iter:
+            if interactive_pat.match(arg):
+                return None
+
+            match = py_arg_pat.match(arg)
+            if match:
+                file, ddash, cm_py_args, cm, cm_arg = match.groups()
+                if file:
+                    # file.py [script args]
+                    script = file
+                elif ddash:
+                    # -- file.py [script args]
+                    script = next(args_iter, None)
+                elif cm:
+                    # -m mod [script args]
+                    if cm_py_args:
+                        # "-[pyopts]m"
+                        py_args.append(f"-{cm_py_args}")
+                    mode = [f"-{cm}"]
+                    # -m mod | -mmod
+                    script = cm_arg or next(args_iter, None)
+                break
+
+            # -pyopts
+            py_args.append(arg)
+
+        if script is None:
+            return None
+        return [sys.executable, *py_args, "-m", "viztracer", "--quiet", *viz_args, *mode, script, *args_iter]
+
     @functools.wraps(subprocess.Popen.__init__)
-    def subprocess_init(self, args: Union[str, Sequence], **kwargs) -> None:
-        if sys.version_info >= (3, 7):
-            from collections.abc import Sequence
-        else:
-            from collections import Sequence
-
-        new_args: Union[str, Sequence[Any]] = args
+    def subprocess_init(self: subprocess.Popen[Any], args: Union[str, Sequence[Any], Any], **kwargs: Any) -> None:
+        new_args = args
         if isinstance(new_args, str):
-            new_args = new_args.split()
+            new_args = shlex.split(new_args)
         if isinstance(new_args, Sequence):
-            new_args = list(new_args)
             if "python" in os.path.basename(new_args[0]):
-                for py_arg in "bBdEhiIOqsSuvVx":
-                    if f"-{py_arg}" in new_args:
-                        new_args.remove(f"-{py_arg}")
-                if "-c" in new_args:
-                    # If python use -c mode, we move this to viztracer command
-                    idx = new_args.index("-c")
-                    viz_args.append(new_args.pop(idx))
-                    viz_args.append(new_args.pop(idx))
-                new_args = ["viztracer", "--quiet"] + viz_args + ["--"] + new_args[1:]
+                new_args = build_command(new_args)
             else:
-                new_args = args
+                new_args = None
 
-        self.__originit__(new_args, **kwargs)
+        if new_args is None:
+            new_args = args
+        assert hasattr(subprocess_init, "__wrapped__")  # for mypy
+        subprocess_init.__wrapped__(self, new_args, **kwargs)
 
     # We need to filter the arguments as there are something we may not want
     if "-m" in viz_args:
@@ -88,7 +121,7 @@ def patch_multiprocessing(tracer: VizTracer, args: List[str]) -> None:
                     spawn_main(%s)
                     """)
             prog %= ', '.join('%s=%r' % item for item in kwds.items())
-            opts = multiprocessing.util._args_from_interpreter_flags()
+            opts = multiprocessing.util._args_from_interpreter_flags()  # type: ignore
             return [multiprocessing.spawn._python_exe] + opts + ['-c', prog, '--multiprocessing-fork']  # type: ignore
 
     multiprocessing.spawn.get_command_line = get_command_line
@@ -126,8 +159,9 @@ def patch_spawned_process(viztracer_kwargs: Dict[str, Any], cmdline_args: List[s
     from multiprocessing.spawn import prepare
     import multiprocessing.spawn
 
+    @no_type_check
     @functools.wraps(multiprocessing.spawn._main)
-    def _main_3839(fd, parent_sentinel):
+    def _main_3839(fd, parent_sentinel) -> Any:
         with os.fdopen(fd, 'rb', closefd=True) as from_parent:
             process.current_process()._inheriting = True
             try:
@@ -140,8 +174,9 @@ def patch_spawned_process(viztracer_kwargs: Dict[str, Any], cmdline_args: List[s
                 del process.current_process()._inheriting
         return self._bootstrap(parent_sentinel)
 
+    @no_type_check
     @functools.wraps(multiprocessing.spawn._main)
-    def _main_3637(fd):
+    def _main_3637(fd) -> Any:
         with os.fdopen(fd, 'rb', closefd=True) as from_parent:
             process.current_process()._inheriting = True
             try:
