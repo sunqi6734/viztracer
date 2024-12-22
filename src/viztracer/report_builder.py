@@ -2,21 +2,21 @@
 # For details: https://github.com/gaogaotiantian/viztracer/blob/master/NOTICE.txt
 
 try:
-    import orjson  # type: ignore
+    import orjson as json  # type: ignore
 except ImportError:
-    import json
+    import json  # type: ignore
+
 import gzip
 import os
 import re
 from string import Template
-import sys
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, TextIO
+from typing import Any, Optional, Sequence, TextIO, Union
 
-from .util import color_print, same_line_print
 from . import __version__
+from .util import color_print, same_line_print
 
 
-def get_json(data: Union[Dict, str]) -> Dict[str, Any]:
+def get_json(data: Union[dict, str, tuple[str, dict]]) -> dict[str, Any]:
     # This function will return a json object if data is already json object
     # or a opened file or a file path
     if isinstance(data, dict):
@@ -25,33 +25,65 @@ def get_json(data: Union[Dict, str]) -> Dict[str, Any]:
     elif isinstance(data, str):
         with open(data, encoding="utf-8") as f:
             json_str = f.read()
+    elif isinstance(data, tuple):
+        path, args = data
+        if args['type'] == 'torch':
+            with open(path, encoding="utf-8") as f:
+                json_str = f.read()
+            ret = json.loads(json_str)
+            base_offset = args['base_offset']
+            torch_offset = ret['baseTimeNanoseconds']
+            # convert to us
+            offset_diff = (torch_offset - base_offset) / 1000
 
-    if "orjson" in sys.modules:
-        return orjson.loads(json_str)
-    else:
-        return json.loads(json_str)
+            for event in ret['traceEvents']:
+                if 'ts' in event:
+                    event['ts'] += offset_diff
+                if event['ph'] == 'M':
+                    # Pop metadata timestamp so it won't overwrite
+                    # process and thread names
+                    event.pop('ts', None)
+
+            ret.pop("baseTimeNanoseconds")
+            ret.pop("displayTimeUnit")
+            ret.pop("traceName")
+            ret.pop("deviceProperties")
+            ret.pop("schemaVersion")
+
+            ret['viztracer_metadata'] = {}
+
+            return ret
+
+    return json.loads(json_str)
 
 
 class ReportBuilder:
     def __init__(
             self,
-            data: Union[Sequence[str], Dict],
+            data: Union[Sequence[Union[str, dict, tuple[str, dict]]], dict],
             verbose: int = 1,
             align: bool = False,
-            minimize_memory: bool = False) -> None:
+            minimize_memory: bool = False,
+            base_time: Optional[int] = None) -> None:
         self.data = data
         self.verbose = verbose
-        self.combined_json: Dict = {}
+        self.combined_json: dict = {}
         self.entry_number_threshold = 4000000
         self.align = align
         self.minimize_memory = minimize_memory
-        self.jsons: List[Dict] = []
+        self.jsons: list[dict] = []
+        self.invalid_json_paths: list[str] = []
         self.json_loaded = False
-        self.final_messages: List[Tuple[str, Dict]] = []
+        self.base_time = base_time
+        self.final_messages: list[tuple[str, dict]] = []
         if not isinstance(data, (dict, list, tuple)):
             raise TypeError("Invalid data type for ReportBuilder")
         if isinstance(data, (list, tuple)):
             for path in data:
+                if isinstance(path, dict):
+                    continue
+                if isinstance(path, tuple):
+                    path = path[0]
                 if not isinstance(path, str):
                     raise TypeError("Path should be a string")
                 if not os.path.exists(path):
@@ -66,10 +98,17 @@ class ReportBuilder:
                 self.jsons = [get_json(self.data)]
             elif isinstance(self.data, (list, tuple)):
                 self.jsons = []
+                self.invalid_json_paths = []
                 for idx, j in enumerate(self.data):
                     if self.verbose > 0:
                         same_line_print(f"Loading trace data from processes {idx}/{len(self.data)}")
-                    self.jsons.append(get_json(j))
+                    try:
+                        self.jsons.append(get_json(j))
+                    except json.JSONDecodeError:
+                        assert isinstance(j, str)
+                        self.invalid_json_paths.append(j)
+                if len(self.invalid_json_paths) > 0:
+                    self.final_messages.append(("invalid_json", {"paths": self.invalid_json_paths}))
 
     def combine_json(self) -> None:
         if self.verbose > 0:
@@ -77,18 +116,31 @@ class ReportBuilder:
         if self.combined_json:
             return
         if not self.jsons:
-            raise ValueError("Can't get report of nothing")
+            if self.invalid_json_paths:
+                raise ValueError("No valid json files found")
+            else:
+                raise ValueError("Can't get report of nothing")
         if self.align:
             for one in self.jsons:
                 self.align_events(one["traceEvents"])
         self.combined_json = self.jsons[0]
+        if "viztracer_metadata" not in self.combined_json:
+            self.combined_json["viztracer_metadata"] = {}
         for one in self.jsons[1:]:
             if "traceEvents" in one:
                 self.combined_json["traceEvents"].extend(one["traceEvents"])
-            if one["viztracer_metadata"].get("overflow", False):
+            if one.get("viztracer_metadata", {}).get("overflow", False):
                 self.combined_json["viztracer_metadata"]["overflow"] = True
+            if one.get("viztracer_metadata", {}).get("baseTimeNanoseconds") is not None:
+                self.combined_json["viztracer_metadata"]["baseTimeNanoseconds"] = \
+                    one["viztracer_metadata"]["baseTimeNanoseconds"]
+            if "file_info" in one:
+                if "file_info" not in self.combined_json:
+                    self.combined_json["file_info"] = {"files": {}, "functions": {}}
+                self.combined_json["file_info"]["files"].update(one["file_info"]["files"])
+                self.combined_json["file_info"]["functions"].update(one["file_info"]["functions"])
 
-    def align_events(self, original_events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def align_events(self, original_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """
         Apply an offset to all the trace events, making the start timestamp 0
         This is useful when comparing multiple runs of the same script
@@ -117,8 +169,12 @@ class ReportBuilder:
 
         self.combined_json["viztracer_metadata"]["version"] = __version__
 
+        if self.base_time is not None:
+            self.combined_json["viztracer_metadata"]["baseTimeNanoseconds"] = self.base_time
+
         if file_info:
-            self.combined_json["file_info"] = {"files": {}, "functions": {}}
+            if "file_info" not in self.combined_json:
+                self.combined_json["file_info"] = {"files": {}, "functions": {}}
             pattern = re.compile(r".*\((.*):([0-9]*)\)")
             file_dict = self.combined_json["file_info"]["files"]
             func_dict = self.combined_json["file_info"]["functions"]
@@ -150,23 +206,23 @@ class ReportBuilder:
                 tmpl = f.read()
             with open(os.path.join(os.path.dirname(__file__), "html/trace_viewer_full.html"), encoding="utf-8") as f:
                 sub["trace_viewer_full"] = f.read()
-            if "orjson" in sys.modules:
-                sub["json_data"] = orjson.dumps(self.combined_json) \
-                                         .decode("utf-8") \
-                                         .replace("</script>", "<\\/script>")
+            if json.__name__ == "orjson":
+                sub["json_data"] = json.dumps(self.combined_json) \
+                                       .decode("utf-8") \
+                                       .replace("</script>", "<\\/script>")
             else:
                 sub["json_data"] = json.dumps(self.combined_json) \
-                                       .replace("</script>", "<\\/script>")
+                                       .replace("</script>", "<\\/script>")  # type: ignore
             output_file.write(Template(tmpl).substitute(sub))
         elif output_format == "json":
             self.prepare_json(file_info=file_info)
-            if "orjson" in sys.modules:
-                output_file.write(orjson.dumps(self.combined_json).decode("utf-8"))
+            if json.__name__ == "orjson":
+                output_file.write(json.dumps(self.combined_json).decode("utf-8"))
             else:
                 if self.minimize_memory:
                     json.dump(self.combined_json, output_file)  # type: ignore
                 else:
-                    output_file.write(json.dumps(self.combined_json))
+                    output_file.write(json.dumps(self.combined_json))  # type: ignore
 
     def save(self, output_file: Union[str, TextIO] = "result.html", file_info: bool = True) -> None:
         if isinstance(output_file, str):
@@ -209,6 +265,13 @@ class ReportBuilder:
                     report_abspath = os.path.abspath(msg_args["output_file"])
                     print("Use the following command to open the report:")
                     if " " in report_abspath:
-                        color_print("OKGREEN", "vizviewer \"{}\"".format(report_abspath))
+                        color_print("OKGREEN", f"vizviewer \"{report_abspath}\"")
                     else:
-                        color_print("OKGREEN", "vizviewer {}".format(report_abspath))
+                        color_print("OKGREEN", f"vizviewer {report_abspath}")
+                elif msg_type == "invalid_json":
+                    print("")
+                    color_print("WARNING", "Found and ignored invalid json file, you may lost some process data.")
+                    color_print("WARNING", "Invalid json file:")
+                    for msg in msg_args["paths"]:
+                        color_print("WARNING", f"    {msg}")
+                    print("")

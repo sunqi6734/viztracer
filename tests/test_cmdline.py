@@ -3,12 +3,15 @@
 
 import configparser
 import importlib.util
-from contextlib import contextmanager
 import os
+import re
 import signal
 import sys
-import re
+import textwrap
+import tempfile
+from contextlib import contextmanager
 from unittest.case import skipIf
+
 from .cmdline_tmpl import CmdlineTmpl
 from .package_env import package_matrix
 
@@ -123,7 +126,7 @@ except Exception:
 
 file_log_audit = """
 # something viztracer does not use
-import cgi
+import netrc
 a = 0
 b = id(a)
 """
@@ -204,6 +207,11 @@ import jaxlib.mlir.dialects.chlo
 import jaxlib.mlir.dialects.mhlo
 """
 
+file_pid_suffix = """
+import os
+print(os.getpid())
+"""
+
 
 class TestCommandLineBasic(CmdlineTmpl):
     def test_no_file(self):
@@ -252,6 +260,26 @@ class TestCommandLineBasic(CmdlineTmpl):
         self.template(["viztracer", "-o", "result.json", "cmdline_test.py"], expected_output_file="result.json")
         self.template(["viztracer", "-o", "result.json.gz", "cmdline_test.py"], expected_output_file="result.json.gz")
 
+    def test_unique_outputfile(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.template(["viztracer", "--output_dir", tmpdir, "-u", "cmdline_test.py"],
+                          expected_output_file=None)
+            self.assertEqual(len(os.listdir(tmpdir)), 1)
+            self.assertRegex(os.listdir(tmpdir)[0], r"cmdline_test_\d{8}_\d{6}_\d+\.json")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            abspath = os.path.abspath("cmdline_test.py")
+            self.template(["viztracer", "--output_dir", tmpdir, "-u", abspath],
+                          expected_output_file=None)
+            self.assertEqual(len(os.listdir(tmpdir)), 1)
+            self.assertRegex(os.listdir(tmpdir)[0], r"cmdline_test_\d{8}_\d{6}_\d+\.json")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.template(["viztracer", "--output_dir", tmpdir, "-u", "-m", "numbers"],
+                          expected_output_file=None)
+            self.assertEqual(len(os.listdir(tmpdir)), 1)
+            self.assertRegex(os.listdir(tmpdir)[0], r"numbers_\d{8}_\d{6}_\d+\.json")
+
     def test_verbose(self):
         result = self.template(["python", "-m", "viztracer", "cmdline_test.py"])
         self.assertTrue("Use the following command" in result.stdout.decode("utf8"))
@@ -288,11 +316,11 @@ class TestCommandLineBasic(CmdlineTmpl):
     def test_log_func_retval(self):
         self.template(["python", "-m", "viztracer", "--log_func_retval", "cmdline_test.py"], script=file_c_function)
 
-    def test_vdb(self):
-        self.template(["python", "-m", "viztracer", "--vdb", "cmdline_test.py"])
-
     def test_log_func_args(self):
         self.template(["python", "-m", "viztracer", "--log_func_args", "cmdline_test.py"])
+
+    def test_log_func_with_objprint(self):
+        self.template(["python", "-m", "viztracer", "--log_func_args", "--log_func_with_objprint", "cmdline_test.py"])
 
     def test_minimize_memory(self):
         self.template(["python", "-m", "viztracer", "--minimize_memory", "cmdline_test.py"])
@@ -319,14 +347,14 @@ class TestCommandLineBasic(CmdlineTmpl):
 
     def test_trace_self(self):
         def check_func(data):
-            self.assertGreater(len(data["traceEvents"]), 10000)
+            self.assertGreater(len(data["traceEvents"]), 1000)
 
         example_json_dir = os.path.join(os.path.dirname(__file__), "../", "example/json")
         if sys.platform == "win32":
-            self.template(["viztracer", "--trace_self", "vizviewer", "--flamegraph", "--server_only",
+            self.template(["viztracer", "--trace_self", "vizviewer", "--server_only",
                            os.path.join(example_json_dir, "multithread.json")], success=False)
         else:
-            self.template(["viztracer", "--trace_self", "vizviewer", "--flamegraph", "--server_only",
+            self.template(["viztracer", "--trace_self", "vizviewer", "--server_only",
                            os.path.join(example_json_dir, "multithread.json")],
                           send_sig=(signal.SIGTERM, "Ctrl+C"), expected_output_file="result.json", check_func=check_func)
 
@@ -335,16 +363,29 @@ class TestCommandLineBasic(CmdlineTmpl):
         self.template(["python", "-m", "viztracer", "--min_duration", "0.0.3s", "cmdline_test.py"], success=False)
 
     def test_pid_suffix(self):
-        self.template(["python", "-m", "viztracer", "--pid_suffix", "--output_dir", "./suffix_tmp", "cmdline_test.py"],
-                      expected_output_file="./suffix_tmp")
+        result = self.template(
+            ["python", "-m", "viztracer", "--pid_suffix", "--output_dir", "./suffix_tmp", "cmdline_test.py"],
+            expected_output_file="./suffix_tmp", script=file_pid_suffix, cleanup=False
+        )
+        pid = result.stdout.decode("utf-8").split()[0]
+        self.assertFileExists(os.path.join("./suffix_tmp", f"result_{pid}.json"))
+        self.cleanup(output_file="./suffix_tmp")
 
-    def test_path_finding(self):
-        if sys.platform in ["linux", "linux2", "darwin"]:
-            # path finding only works on Unix
-            self.template(["viztracer", "vdb"], success=False)
+    def test_pid_suffix_and_output(self):
+        result = self.template(
+            ["python", "-m", "viztracer", "--pid_suffix", "--output_dir", "./suffix_tmp", "-o", "test.json",
+             "cmdline_test.py"], expected_output_file="./suffix_tmp", script=file_pid_suffix, cleanup=False
+        )
+        pid = result.stdout.decode("utf-8").split()[0]
+        self.assertFileExists(os.path.join("./suffix_tmp", f"test_{pid}.json"))
+        self.cleanup(output_file="./suffix_tmp")
 
     def test_module(self):
         self.template(["viztracer", "-m", "numbers"])
+
+    def test_import_star(self):
+        script = "from viztracer import *"
+        self.template(["python", "cmdline_test.py"], script=script, expected_output_file=None)
 
     def test_log_gc(self):
         self.template(["viztracer", "--log_gc", "cmdline_test.py"], script=file_gc)
@@ -362,6 +403,14 @@ class TestCommandLineBasic(CmdlineTmpl):
                       script=file_log_var,
                       expected_output_file="result.json",
                       expected_entries=12)
+
+        code_ast = textwrap.dedent("""
+            import ast
+            tree = ast.parse("a = 1")
+        """)
+        self.template(["viztracer", "--log_var", "tree", "-o", "result.json", "cmdline_test.py"],
+                      script=code_ast,
+                      expected_output_file="result.json")
 
     def test_log_attr(self):
         self.template(["viztracer", "--log_attr", "a.*", "-o", "result.json", "cmdline_test.py"],
@@ -386,7 +435,6 @@ class TestCommandLineBasic(CmdlineTmpl):
                       expected_output_file="result.json",
                       expected_entries=7)
 
-    @skipIf(sys.version_info < (3, 8), "sys.addaudithook does not exist on 3.8-")
     def test_log_audit(self):
         def check_func(include_names, exclude_names=[]):
             def inner(data):
@@ -476,6 +524,8 @@ class TestCommandLineBasic(CmdlineTmpl):
 
     def test_invalid_file(self):
         self.template(["viztracer", "no_such_file.py"], success=False, expected_output_file=[])
+        self.template(["viztracer", "result_wrong.json"], script_name="result_wrong.json",
+                      success=False, expected_output_file=[], expected_stdout="vizviewer result_wrong.json")
 
     def test_rcfile(self):
 

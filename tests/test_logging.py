@@ -2,7 +2,10 @@
 # For details: https://github.com/gaogaotiantian/viztracer/blob/master/NOTICE.txt
 
 import logging
-from viztracer import VizTracer, VizLoggingHandler
+
+from viztracer import VizTracer
+from viztracer.vizlogging import VizLoggingHandler
+
 from .base_tmpl import BaseTmpl
 
 

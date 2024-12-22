@@ -3,29 +3,28 @@
 
 import ast
 import copy
-from functools import reduce
 import re
-import sys
-from typing import Any, Callable, Dict, List, Optional, Union
+from functools import reduce
+from typing import Any, Callable, Optional, Union
 
 from .util import color_print
 
 
 class AstTransformer(ast.NodeTransformer):
-    def __init__(self, inst_type: str, inst_args: Dict[str, dict]) -> None:
+    def __init__(self, inst_type: str, inst_args: dict[str, dict]) -> None:
         super().__init__()
         self.inst_type: str = inst_type
-        self.inst_args: Dict[str, dict] = inst_args
+        self.inst_args: dict[str, dict] = inst_args
         self.curr_lineno: int = 0
         self.log_func_exec_enable: bool = False
 
-    def visit_Assign(self, node: ast.Assign) -> Union[ast.stmt, List[ast.stmt]]:
+    def visit_Assign(self, node: ast.Assign) -> Union[ast.stmt, list[ast.stmt]]:
         return self._visit_generic_assign(node)
 
-    def visit_AugAssign(self, node: ast.AugAssign) -> Union[ast.stmt, List[ast.stmt]]:
+    def visit_AugAssign(self, node: ast.AugAssign) -> Union[ast.stmt, list[ast.stmt]]:
         return self._visit_generic_assign(node)
 
-    def visit_AnnAssign(self, node: ast.AnnAssign) -> Union[ast.stmt, List[ast.stmt]]:
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> Union[ast.stmt, list[ast.stmt]]:
         return self._visit_generic_assign(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
@@ -38,13 +37,9 @@ class AstTransformer(ast.NodeTransformer):
                 if re.fullmatch(funcname, node.name):
                     node.body.insert(0, self.get_instrument_node("Function Entry", node.name))
         elif self.inst_type in ("log_var", "log_number"):
-            instrumented_nodes: List[ast.stmt] = []
+            instrumented_nodes: list[ast.stmt] = []
             args = node.args
-            if sys.version_info >= (3, 8):
-                func_args_name = [a.arg for a in args.posonlyargs + args.args + args.kwonlyargs]
-            else:
-                # python 3.7 does not have posonlyargs
-                func_args_name = [a.arg for a in args.args + args.kwonlyargs]
+            func_args_name = [a.arg for a in args.posonlyargs + args.args + args.kwonlyargs]
             if "vararg" in args._fields and args.vararg:
                 func_args_name.append(args.vararg.arg)
             if "kwarg" in args._fields and args.kwarg:
@@ -74,15 +69,15 @@ class AstTransformer(ast.NodeTransformer):
                 node.body = instrumented_nodes + node.body
         return node
 
-    def visit_Raise(self, node: ast.Raise) -> Union[ast.AST, List[ast.AST]]:
+    def visit_Raise(self, node: ast.Raise) -> Union[ast.AST, list[ast.AST]]:
         if self.inst_type == "log_exception":
             instrument_node = self.get_instrument_node_by_node("Exception", node.exc)
             return [instrument_node, node]
         return node
 
-    def _visit_generic_assign(self, node: Union[ast.Assign, ast.AugAssign, ast.AnnAssign]) -> List[ast.stmt]:
+    def _visit_generic_assign(self, node: Union[ast.Assign, ast.AugAssign, ast.AnnAssign]) -> list[ast.stmt]:
         self.generic_visit(node)
-        ret: List[ast.stmt] = [node]
+        ret: list[ast.stmt] = [node]
         self.curr_lineno = node.lineno
         if self.inst_type in ("log_var", "log_number", "log_attr", "log_func_exec"):
             if isinstance(node, (ast.AugAssign, ast.AnnAssign)):
@@ -96,7 +91,7 @@ class AstTransformer(ast.NodeTransformer):
                         ret.extend(instrumented_nodes)
         return ret
 
-    def get_assign_targets(self, node: ast.expr) -> List[str]:
+    def get_assign_targets(self, node: ast.expr) -> list[str]:
         """
         :param ast.Node node:
         """
@@ -110,7 +105,7 @@ class AstTransformer(ast.NodeTransformer):
             Please report to the author github.com/gaogaotiantian/viztracer".format(type(node)))
         return []
 
-    def get_assign_targets_with_attr(self, node: ast.AST) -> List[ast.Attribute]:
+    def get_assign_targets_with_attr(self, node: ast.AST) -> list[ast.Attribute]:
         """
         :param ast.Node node:
         """
@@ -124,13 +119,13 @@ class AstTransformer(ast.NodeTransformer):
             Please report to the author github.com/gaogaotiantian/viztracer".format(type(node)))
         return []
 
-    def get_assign_log_nodes(self, target: ast.expr) -> List[ast.stmt]:
+    def get_assign_log_nodes(self, target: ast.expr) -> list[ast.stmt]:
         """
         given a target of any type of Assign, return the instrumented node
         that log this variable
         if this target is not supposed to be logged, return []
         """
-        ret: List[ast.stmt] = []
+        ret: list[ast.stmt] = []
         if self.inst_type in ("log_var", "log_number"):
             target_ids = self.get_assign_targets(target)
             for target_id in target_ids:
@@ -162,22 +157,22 @@ class AstTransformer(ast.NodeTransformer):
             return self.get_add_variable_node(
                 name=f"{trigger} - {name}",
                 var_node=ast.Name(id=name, ctx=ast.Load()),
-                event=event
+                event=event,
             )
         elif self.inst_type == "log_func_exec":
             return self.get_add_func_exec_node(
                 name=f"{name}",
                 val=ast.Name(id=name, ctx=ast.Load()),
-                lineno=self.curr_lineno
+                lineno=self.curr_lineno,
             )
         elif self.inst_type == "log_func_entry":
             return self.get_add_variable_node(
                 name=f"{trigger} - {name}",
-                var_node=ast.Constant(value="{} is called".format(name)),
-                event="instant"
+                var_node=ast.Constant(value=f"{name} is called"),
+                event="instant",
             )
         else:
-            raise ValueError("{} is not supported".format(name))
+            raise ValueError(f"{name} is not supported")
 
     def get_instrument_node_by_node(self, trigger: str, node: Optional[ast.expr]) -> ast.Expr:
         var_node: ast.expr
@@ -190,24 +185,24 @@ class AstTransformer(ast.NodeTransformer):
         return self.get_add_variable_node(
             name=name,
             var_node=var_node,
-            event="instant"
+            event="instant",
         )
 
-    def get_add_variable_node(self, name: str, var_node: ast.AST, event: str) -> ast.Expr:
+    def get_add_variable_node(self, name: str, var_node: ast.expr, event: str) -> ast.Expr:
         node_instrument = ast.Expr(
             value=ast.Call(
                 func=ast.Attribute(
                     value=ast.Name(id="__viz_tracer__", ctx=ast.Load()),
                     attr="add_variable",
-                    ctx=ast.Load()
+                    ctx=ast.Load(),
                 ),
                 args=[
                     ast.Constant(value=name),
                     var_node,
-                    ast.Constant(value=event)
+                    ast.Constant(value=event),
                 ],
-                keywords=[]
-            )
+                keywords=[],
+            ),
         )
         return node_instrument
 
@@ -217,15 +212,15 @@ class AstTransformer(ast.NodeTransformer):
                 func=ast.Attribute(
                     value=ast.Name(id="__viz_tracer__", ctx=ast.Load()),
                     attr="add_func_exec",
-                    ctx=ast.Load()
+                    ctx=ast.Load(),
                 ),
                 args=[
                     ast.Constant(value=name),
                     ast.Name(id=name, ctx=ast.Load()),
-                    ast.Constant(value=lineno)
+                    ast.Constant(value=lineno),
                 ],
-                keywords=[]
-            )
+                keywords=[],
+            ),
         )
         return node_instrument
 
@@ -248,39 +243,31 @@ class AstTransformer(ast.NodeTransformer):
             return node.id
         elif isinstance(node, ast.Constant):
             if isinstance(node.value, str):
-                return "'{}'".format(node.value)
+                return f"'{node.value}'"
             else:
-                return "{}".format(node.value)
-        elif isinstance(node, ast.Num):
-            return "{}".format(node.n)
-        elif isinstance(node, ast.Str):
-            return "'{}'".format(node.s)
+                return f"{node.value}"
         elif isinstance(node, ast.Attribute):
-            return "{}.{}".format(self.get_string_of_expr(node.value), node.attr)
+            return f"{self.get_string_of_expr(node.value)}.{node.attr}"
         elif isinstance(node, ast.Subscript):
-            return "{}[{}]".format(self.get_string_of_expr(node.value), self.get_string_of_expr(node.slice))
+            return f"{self.get_string_of_expr(node.value)}[{self.get_string_of_expr(node.slice)}]"
         elif isinstance(node, ast.Call):
-            return "{}()".format(self.get_string_of_expr(node.func))
+            return f"{self.get_string_of_expr(node.func)}()"
         elif isinstance(node, ast.Starred):
-            return "*{}".format(self.get_string_of_expr(node.value))
+            return f"*{self.get_string_of_expr(node.value)}"
         elif isinstance(node, ast.Tuple):
-            return "({})".format(",".join([self.get_string_of_expr(elt) for elt in node.elts]))
+            return f"({','.join([self.get_string_of_expr(elt) for elt in node.elts])})"
         elif isinstance(node, ast.List):
-            return "[{}]".format(",".join([self.get_string_of_expr(elt) for elt in node.elts]))
-        elif sys.version_info < (3, 9) and isinstance(node, ast.Index):
-            return self.get_string_of_expr(node.value)
+            return f"[{','.join([self.get_string_of_expr(elt) for elt in node.elts])}]"
         elif isinstance(node, ast.Slice):
             lower = self.get_string_of_expr(node.lower) if "lower" in node._fields and node.lower else ""
             upper = self.get_string_of_expr(node.upper) if "upper" in node._fields and node.upper else ""
             step = self.get_string_of_expr(node.step) if "step" in node._fields and node.step else ""
             if step:
-                return "{}:{}:{}".format(lower, upper, step)
+                return f"{lower}:{upper}:{step}"
             elif upper:
-                return "{}:{}".format(lower, upper)
+                return f"{lower}:{upper}"
             else:
-                return "{}:".format(lower)
-        elif sys.version_info < (3, 9) and isinstance(node, ast.ExtSlice):
-            return ",".join([self.get_string_of_expr(dim) for dim in node.dims])
+                return f"{lower}:"
         color_print("WARNING", "Unexpected node type {} for ast.Assign. \
             Please report to the author github.com/gaogaotiantian/viztracer".format(type(node)))
         return ""
@@ -290,6 +277,7 @@ class SourceProcessor:
     """
     Pre-process comments like #!viztracer: log_instant("event")
     """
+
     def process(self, source: Any):
         if isinstance(source, bytes):
             source = source.decode("utf-8")
@@ -337,7 +325,7 @@ class SourceProcessor:
         # !viztracer: log_var("var", var) if var > 3
         (re.compile(r"(\s*)#\s*!viztracer:\s*(log_.*?\(.*\))\s*if\s+(.*?)\s*$"), line_transform_condition),
         # a = 3  # !viztracer: log if a != 3
-        (re.compile(r"(.*\S.*)#\s*!viztracer:\s*log\s*if\s+(.*?)\s*$"), inline_transform_condition)
+        (re.compile(r"(.*\S.*)#\s*!viztracer:\s*log\s*if\s+(.*?)\s*$"), inline_transform_condition),
     ]
 
 
@@ -346,22 +334,23 @@ class CodeMonkey:
         self.file_name: str = file_name
         self._compile: Callable = compile
         self.source_processor: Optional[SourceProcessor] = None
-        self.ast_transformers: List[AstTransformer] = []
+        self.ast_transformers: list[AstTransformer] = []
 
-    def add_instrument(self, inst_type: str, inst_args: Dict[str, Dict]) -> None:
+    def add_instrument(self, inst_type: str, inst_args: dict[str, dict]) -> None:
         self.ast_transformers.append(AstTransformer(inst_type, inst_args))
 
-    def add_source_processor(self):
+    def add_source_processor(self) -> None:
         self.source_processor = SourceProcessor()
 
-    def compile(self, source, filename, mode, flags=0, dont_inherit=False, optimize=-1):
+    def compile(self, source, filename, mode, flags=0, dont_inherit=False, optimize=-1, *, _feature_version=-1):
         if self.source_processor is not None:
             source = self.source_processor.process(source)
         if self.ast_transformers:
-            tree = self._compile(source, filename, mode, flags | ast.PyCF_ONLY_AST, dont_inherit, optimize)
+            tree = self._compile(source, filename, mode, flags | ast.PyCF_ONLY_AST,
+                                 dont_inherit, optimize, _feature_version=_feature_version)
             for trans in self.ast_transformers:
                 trans.visit(tree)
                 ast.fix_missing_locations(tree)
-            return self._compile(tree, filename, mode, flags, dont_inherit, optimize)
+            return self._compile(tree, filename, mode, flags, dont_inherit, optimize, _feature_version=_feature_version)
 
-        return self._compile(source, filename, mode, flags, dont_inherit, optimize)
+        return self._compile(source, filename, mode, flags, dont_inherit, optimize, _feature_version=_feature_version)

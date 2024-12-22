@@ -2,27 +2,34 @@
 # For details: https://github.com/gaogaotiantian/viztracer/blob/master/NOTICE.txt
 
 
-from viztracer import VizTracer
-from viztracer.attach_process.add_code_to_python_process import run_python_code  # type: ignore
-from viztracer.util import pid_exists
 import base64
 import json
 import os
+import platform
 import re
 import signal
+import subprocess
 import sys
+import textwrap
 import time
 import unittest
-import textwrap
-import subprocess
+
+from viztracer import VizTracer
+from viztracer.attach_process.add_code_to_python_process import run_python_code  # type: ignore
+from viztracer.util import pid_exists
 
 from .cmdline_tmpl import CmdlineTmpl
 from .util import cmd_with_coverage
 
 
-@unittest.skipIf(sys.platform == "darwin" and sys.version_info >= (3, 11), "Does not support 3.11+ on Mac")
+attach_unavailable = (sys.platform == "win32"
+                      or (sys.platform == "darwin"
+                          and (sys.version_info > (3, 11)
+                               or "arm" in platform.processor())))
+
+
+@unittest.skipIf(attach_unavailable, "Does not support attach on this platform")
 class TestRemote(CmdlineTmpl):
-    @unittest.skipIf(sys.platform == "win32", "Does not support on Windows")
     def test_install(self):
         tracer = VizTracer(output_file="remote.json", verbose=0)
         tracer.install()
@@ -32,7 +39,6 @@ class TestRemote(CmdlineTmpl):
         self.assertFileExists("remote.json")
         os.remove("remote.json")
 
-    @unittest.skipIf(sys.platform == "win32", "Does not support on Windows")
     def test_attach_installed(self):
         file_to_attach = textwrap.dedent("""
             from viztracer import VizTracer
@@ -51,7 +57,6 @@ class TestRemote(CmdlineTmpl):
         self.attach_check(file_to_attach, attach_cmd, output_file)
         self.attach_check(file_to_attach, attach_installed_cmd, output_file, use_installed=True)
 
-    @unittest.skipIf(sys.platform == "win32", "Does not support on Windows")
     def test_attach(self):
         file_to_attach = textwrap.dedent("""
             import time
@@ -59,7 +64,7 @@ class TestRemote(CmdlineTmpl):
             while True:
                 time.sleep(0.5)
         """)
-        output_file = os.path.abspath(f"./remote_{int(time.time()*1000)}.json")
+        output_file = os.path.abspath(f"./remote_{int(time.time() * 1000)}.json")
         attach_cmd = cmd_with_coverage(["viztracer", "-o", output_file, "--attach"])
 
         self.attach_check(file_to_attach, attach_cmd, output_file)
@@ -90,7 +95,7 @@ class TestRemote(CmdlineTmpl):
             out = p_script.stdout.readline()
             self.assertIn("Ready", out.decode("utf-8"))
 
-            wait_time = 2
+            wait_time = 1
             # Test attach feature
             attach_cmd_with_t = attach_cmd + ["-t", str(wait_time)]
             p_attach = subprocess.Popen(attach_cmd_with_t, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -137,7 +142,6 @@ class TestRemote(CmdlineTmpl):
         p_attach_invalid.wait()
         self.assertTrue(p_attach_invalid.returncode != 0)
 
-    @unittest.skipIf(sys.platform == "win32", "Does not support on Windows")
     def test_uninstall(self):
         file_to_attach = textwrap.dedent("""
             import time
@@ -148,7 +152,7 @@ class TestRemote(CmdlineTmpl):
             while True:
                 time.sleep(0.5)
         """)
-        output_file = os.path.abspath(f"remote_{int(time.time()*1000)}.json")
+        output_file = os.path.abspath(f"remote_{int(time.time() * 1000)}.json")
         uninstall_cmd = cmd_with_coverage(["viztracer", "-o", output_file, "--uninstall"])
         attach_cmd = cmd_with_coverage(["viztracer", "-o", output_file, "--attach"])
 
@@ -207,8 +211,12 @@ class TestRemote(CmdlineTmpl):
         p_attach_uninstall.wait()
         self.assertTrue(p_attach_uninstall.returncode != 0)
 
-    @unittest.skipIf(sys.platform != "win32", "Only test Windows")
-    def test_windows(self):
+
+class TestRemoteFail(CmdlineTmpl):
+    @unittest.skipUnless(sys.platform == "win32"
+                         or (sys.platform == "darwin" and "arm" in platform.processor()),
+                         "Only test unavailable platform")
+    def test_unsupported(self):
         tracer = VizTracer(output_file="remote.json")
         with self.assertRaises(SystemExit):
             tracer.install()
@@ -218,9 +226,8 @@ class TestRemote(CmdlineTmpl):
         self.template(["viztracer", "--uninstall", "1234"], success=False)
 
 
-@unittest.skipIf(sys.platform == "darwin" and sys.version_info >= (3, 11), "Does not support 3.11+ on Mac")
+@unittest.skipIf(attach_unavailable, "Does not support this platform")
 class TestAttachSanity(CmdlineTmpl):
-    @unittest.skipIf(sys.platform == "win32", "Can't run attach on Windows")
     def test_basic(self):
         file_to_attach = textwrap.dedent("""
             import time
@@ -248,7 +255,7 @@ class TestAttachSanity(CmdlineTmpl):
             os.remove("attached_script.py")
 
 
-@unittest.skipIf(sys.platform == "darwin" and sys.version_info >= (3, 11), "Does not support 3.11+ on Mac")
+@unittest.skipIf(attach_unavailable, "Does not support this platform")
 class TestAttachScript(CmdlineTmpl):
     def test_attach_script(self):
         # Isolate the attach stuff in a separate process
@@ -281,7 +288,9 @@ class TestAttachScript(CmdlineTmpl):
             self.fail("uninstall failed to prevent tracer from saving data")
 
 
-@unittest.skipUnless(sys.platform == "darwin" and sys.version_info >= (3, 11), "Does not support 3.11+ on Mac")
+@unittest.skipUnless(sys.platform == "darwin"
+                     and "arm" not in platform.processor()
+                     and sys.version_info >= (3, 11), "Does not support 3.11+ on Mac")
 class TestMacWarning(CmdlineTmpl):
     def test_mac_warning(self):
         pid = 12345

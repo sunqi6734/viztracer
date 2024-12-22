@@ -2,16 +2,34 @@
 # For details: https://github.com/gaogaotiantian/viztracer/blob/master/NOTICE.txt
 
 import functools
+import multiprocessing
 import os
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, TypeVar, Union, overload
 
 from .viztracer import VizTracer, get_tracer
 
 
-def ignore_function(method: Optional[Callable] = None, tracer: Optional[VizTracer] = None) -> Callable:
+R = TypeVar("R")
 
-    def inner(func: Callable) -> Callable:
+
+@overload
+def ignore_function(method: None,
+                    tracer: Optional[VizTracer] = None) -> Callable[[Callable[..., R]], Callable[..., R]]:
+    pass  # pragma: no cover
+
+
+@overload
+def ignore_function(method: Callable[..., R],
+                    tracer: Optional[VizTracer] = None) -> Callable[..., R]:
+    pass  # pragma: no cover
+
+
+def ignore_function(method: Optional[Callable[..., R]] = None,
+                    tracer: Optional[VizTracer] = None) -> Union[Callable[..., R],
+                                                                 Callable[[Callable[..., R]], Callable[..., R]]]:
+
+    def inner(func: Callable[..., R]) -> Callable[..., R]:
 
         @functools.wraps(func)
         def ignore_wrapper(*args, **kwargs) -> Any:
@@ -33,9 +51,26 @@ def ignore_function(method: Optional[Callable] = None, tracer: Optional[VizTrace
     return inner
 
 
-def trace_and_save(method: Optional[Callable] = None, output_dir: str = "./", **viztracer_kwargs):
+@overload
+def trace_and_save(method: None,
+                   output_dir: str = "./",
+                   **viztracer_kwargs) -> Callable[[Callable[..., R]], Callable[..., R]]:
+    pass  # pragma: no cover
 
-    def inner(func: Callable) -> Callable:
+
+@overload
+def trace_and_save(method: Callable[..., R],
+                   output_dir: str = "./",
+                   **viztracer_kwargs) -> Callable[..., R]:
+    pass  # pragma: no cover
+
+
+def trace_and_save(method: Optional[Callable[..., R]] = None,
+                   output_dir: str = "./",
+                   **viztracer_kwargs) -> Union[Callable[..., R],
+                                                Callable[[Callable[..., R]], Callable[..., R]]]:
+
+    def inner(func: Callable[..., R]) -> Callable[..., R]:
 
         @functools.wraps(func)
         def wrapper(*args, **kwargs) -> Any:
@@ -45,9 +80,12 @@ def trace_and_save(method: Optional[Callable] = None, output_dir: str = "./", **
             tracer.stop()
             if not os.path.exists(output_dir):
                 os.mkdir(output_dir)
-            file_name = os.path.join(output_dir, "result_{}_{}.json".format(func.__name__, int(100000 * time.time())))
-            tracer.fork_save(file_name)
-            tracer.cleanup()
+            file_name = os.path.join(output_dir, f"result_{func.__name__}_{int(100000 * time.time())}.json")
+            if multiprocessing.get_start_method() == "fork":
+                tracer.fork_save(file_name)
+            else:
+                tracer.save(file_name)
+            tracer.clear()
             return ret
 
         return wrapper
@@ -57,47 +95,73 @@ def trace_and_save(method: Optional[Callable] = None, output_dir: str = "./", **
     return inner
 
 
-def log_sparse(func: Optional[Callable] = None, stack_depth: int = 0) -> Callable:
-    tracer = get_tracer()
-    if tracer is None or not tracer.log_sparse:
-        if func is None:
-            return lambda f: f
-        return func
+def _log_sparse_wrapper(func: Callable, stack_depth: int = 0,
+                        dynamic_tracer_check: bool = False) -> Callable:
+    if not dynamic_tracer_check:
+        tracer = get_tracer()
+        if tracer is None or not tracer.log_sparse:
+            return func
 
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs) -> Any:
+        local_tracer = get_tracer() if dynamic_tracer_check else tracer
+
+        if local_tracer is None:
+            return func(*args, **kwargs)
+        assert isinstance(local_tracer, VizTracer)
+
+        if local_tracer.log_sparse and not local_tracer.enable:
+            if stack_depth > 0:
+                orig_max_stack_depth = local_tracer.max_stack_depth
+                local_tracer.max_stack_depth = stack_depth
+                local_tracer.start()
+                ret = func(*args, **kwargs)
+                local_tracer.stop()
+                local_tracer.max_stack_depth = orig_max_stack_depth
+                return ret
+            else:
+                start = local_tracer.getts()
+                ret = func(*args, **kwargs)
+                dur = local_tracer.getts() - start
+                code = func.__code__
+                raw_data = {
+                    "ph": "X",
+                    "name": f"{code.co_name} ({code.co_filename}:{code.co_firstlineno})",
+                    "ts": start,
+                    "dur": dur,
+                    "cat": "FEE",
+                }
+                local_tracer.add_raw(raw_data)
+                return ret
+        elif local_tracer.enable and not local_tracer.log_sparse:
+            # The call is made from the module inside, so if `trace_self=False` it will be ignored.
+            # To avoid this behavior, we need to reset the counter `ignore_stack_depth`` and then
+            # recover it
+            return local_tracer.shield_ignore(func, *args, **kwargs)
+        else:
+            return func(*args, **kwargs)
+
+    return wrapper
+
+
+@overload
+def log_sparse(func: None,
+               stack_depth: int = 0,
+               dynamic_tracer_check: bool = False) -> Callable[[Callable[..., R]], Callable[..., R]]:
+    pass  # pragma: no cover
+
+
+@overload
+def log_sparse(func: Callable[..., R],
+               stack_depth: int = 0,
+               dynamic_tracer_check: bool = False) -> Callable[..., R]:
+    pass  # pragma: no cover
+
+
+def log_sparse(func: Optional[Callable[..., R]] = None,
+               stack_depth: int = 0,
+               dynamic_tracer_check: bool = False) -> Union[Callable[..., R],
+                                                            Callable[[Callable[..., R]], Callable[..., R]]]:
     if func is None:
-        def inner(dec_func: Callable) -> Callable:
-            @functools.wraps(dec_func)
-            def wrapper(*args, **kwargs) -> Any:
-                assert isinstance(tracer, VizTracer)
-                if not tracer.enable:
-                    orig_max_stack_depth = tracer.max_stack_depth
-                    tracer.max_stack_depth = stack_depth
-                    tracer.start()
-                    ret = dec_func(*args, **kwargs)
-                    tracer.stop()
-                    tracer.max_stack_depth = orig_max_stack_depth
-                    return ret
-                else:
-                    return dec_func(*args, **kwargs)
-            return wrapper
-        return inner
-    else:
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs) -> Any:
-            assert callable(func)
-            assert isinstance(tracer, VizTracer)
-            start = tracer.getts()
-            ret = func(*args, **kwargs)
-            dur = tracer.getts() - start
-            code = func.__code__
-            raw_data = {
-                "ph": "X",
-                "name": f"{code.co_name} ({code.co_filename}:{code.co_firstlineno})",
-                "ts": start,
-                "dur": dur,
-                "cat": "FEE"
-            }
-            tracer.add_raw(raw_data)
-            return ret
-
-        return wrapper
+        return functools.partial(_log_sparse_wrapper, stack_depth=stack_depth, dynamic_tracer_check=dynamic_tracer_check)
+    return _log_sparse_wrapper(func=func, stack_depth=stack_depth, dynamic_tracer_check=dynamic_tracer_check)

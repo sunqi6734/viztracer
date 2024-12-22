@@ -2,22 +2,24 @@
 # For details: https://github.com/gaogaotiantian/viztracer/blob/master/NOTICE.txt
 
 
-import shutil
-from .cmdline_tmpl import CmdlineTmpl
 import json
 import multiprocessing
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
 import sys
-import time
 import tempfile
+import time
 import unittest.mock
 import urllib.request
-from viztracer.viewer import viewer_main
 import webbrowser
+
+from viztracer.viewer import viewer_main
+
+from .cmdline_tmpl import CmdlineTmpl
 
 
 class Viewer(unittest.TestCase):
@@ -25,7 +27,6 @@ class Viewer(unittest.TestCase):
         self,
         file_path,
         once=False,
-        flamegraph=False,
         timeout=None,
         use_external_processor=None,
         expect_success=True,
@@ -39,9 +40,6 @@ class Viewer(unittest.TestCase):
 
         if once:
             self.cmd.append("--once")
-
-        if flamegraph:
-            self.cmd.append("--flamegraph")
 
         if timeout is not None:
             self.cmd.append("--timeout")
@@ -119,7 +117,7 @@ class Viewer(unittest.TestCase):
         self.fail(f"Can't connect to 127.0.0.1:{port}")
 
     def url(self, offset: int = 0) -> str:
-        return f'http://127.0.0.1:{self.port+offset}'
+        return f'http://127.0.0.1:{self.port + offset}'
 
 
 class MockOpen(unittest.TestCase):
@@ -141,7 +139,9 @@ class MockOpen(unittest.TestCase):
             os.kill(self.int_pid, signal.SIGINT)
 
     def __call__(self, url):
-        self.p = multiprocessing.Process(target=self.get_and_check, args=(url, self.file_content))
+        # fork in a multi-threaded program could result in dead lock
+        ctx = multiprocessing.get_context("spawn")
+        self.p = ctx.Process(target=self.get_and_check, args=(url, self.file_content))
         self.p.start()
 
 
@@ -325,38 +325,6 @@ class TestViewer(CmdlineTmpl):
         finally:
             os.remove(f.name)
 
-    def test_flamegraph(self):
-        json_script = '{"file_info": {}, "traceEvents": []}'
-        try:
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-                f.write(json_script)
-
-            # --once won't work with --use_external_processor
-            self.template(["vizviewer", "--flamegraph", "--use_external_processor", f.name],
-                          success=False, expected_output_file=None)
-
-            v = Viewer(f.name, once=True, flamegraph=True)
-            v.run()
-            try:
-                time.sleep(0.5)
-                resp = urllib.request.urlopen(f"{v.url()}/vizviewer_info")
-                self.assertTrue(resp.code == 200)
-                self.assertTrue(json.loads(resp.read().decode("utf-8"))["is_flamegraph"], True)
-                resp = urllib.request.urlopen(f"{v.url()}/flamegraph")
-                self.assertEqual(json.loads(resp.read().decode("utf-8")), [])
-            except Exception:
-                v.stop()
-                raise
-            finally:
-                try:
-                    v.process.wait(timeout=20)
-                    v.stop()
-                except subprocess.TimeoutExpired:
-                    v.stop()
-                    v.process.kill()
-        finally:
-            os.remove(f.name)
-
     @unittest.skipIf(sys.platform == "darwin", "MacOS has a high security check for multiprocessing")
     def test_browser(self):
         html = '<html></html>'
@@ -368,6 +336,34 @@ class TestViewer(CmdlineTmpl):
                     viewer_main()
                     mock_obj.p.join()
                     self.assertEqual(mock_obj.p.exitcode, 0)
+        finally:
+            os.remove(f.name)
+
+    def test_vizviewer_info(self):
+        json_script = '{"file_info": {}, "traceEvents": []}'
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+                f.write(json_script)
+
+            v = Viewer(f.name, once=True)
+            v.run()
+            try:
+                time.sleep(0.5)
+                resp = urllib.request.urlopen(f"{v.url()}/vizviewer_info")
+                self.assertTrue(resp.code == 200)
+                self.assertEqual(json.loads(resp.read().decode("utf-8")), {})
+                resp = urllib.request.urlopen(f"{v.url()}/localtrace")
+                self.assertEqual(json.loads(resp.read().decode("utf-8")), json.loads(json_script))
+            except Exception:
+                v.stop()
+                raise
+            finally:
+                try:
+                    v.process.wait(timeout=20)
+                    v.stop()
+                except subprocess.TimeoutExpired:
+                    v.stop()
+                    v.process.kill()
         finally:
             os.remove(f.name)
 
@@ -406,22 +402,6 @@ class TestViewer(CmdlineTmpl):
             os.remove(f.name)
 
     @unittest.skipIf(sys.platform == "win32", "Can't send Ctrl+C reliably on Windows")
-    def test_directory_flamegraph(self):
-        test_data_dir = os.path.join(os.path.dirname(__file__), "data")
-        with Viewer(test_data_dir, flamegraph=True) as v:
-            time.sleep(0.5)
-            resp = urllib.request.urlopen(v.url())
-            self.assertEqual(resp.code, 200)
-            self.assertIn("fib.json", resp.read().decode("utf-8"))
-            resp = urllib.request.urlopen(f"{v.url()}/fib.json")
-            self.assertEqual(resp.url, f"{v.url(1)}/")
-            resp = urllib.request.urlopen(f"{v.url(1)}/vizviewer_info")
-            self.assertTrue(resp.code == 200)
-            self.assertTrue(json.loads(resp.read().decode("utf-8"))["is_flamegraph"], True)
-            resp = urllib.request.urlopen(f"{v.url(1)}/flamegraph")
-            self.assertEqual(len(json.loads(resp.read().decode("utf-8"))[0]["flamegraph"]), 2)
-
-    @unittest.skipIf(sys.platform == "win32", "Can't send Ctrl+C reliably on Windows")
     def test_directory_timeout(self):
         test_data_dir = os.path.join(os.path.dirname(__file__), "data")
         with Viewer(test_data_dir, timeout=2) as v:
@@ -455,7 +435,14 @@ class TestViewer(CmdlineTmpl):
         finally:
             shutil.rmtree(tmp_dir)
 
+    def test_exception(self):
+        test_data_dir = os.path.join(os.path.dirname(__file__), "data")
+        self.template(["vizviewer", "--port", "-3", os.path.join(test_data_dir, "fib.json")],
+                      success=False, expected_output_file=None, expected_stderr=".*Traceback.*")
+
     def test_invalid(self):
         self.template(["vizviewer", "do_not_exist.json"], success=False, expected_output_file=None)
         self.template(["vizviewer", "README.md"], success=False, expected_output_file=None)
         self.template(["vizviewer", "--flamegraph", "README.md"], success=False, expected_output_file=None)
+        self.template(["vizviewer", "--flamegraph", "example/json/multithread.md"],
+                      success=False, expected_output_file=None, expected_stdout="--flamegraph is removed.*")

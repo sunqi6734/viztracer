@@ -4,8 +4,9 @@
 import io
 import os
 import time
-from viztracer.tracer import _VizTracer
+
 from viztracer import VizTracer
+
 from .base_tmpl import BaseTmpl
 
 
@@ -30,7 +31,7 @@ class TestTracer(BaseTmpl):
 
 class TestCTracer(BaseTmpl):
     def test_c_load(self):
-        tracer = _VizTracer()
+        tracer = VizTracer()
         tracer.start()
         fib(5)
         tracer.stop()
@@ -56,18 +57,18 @@ class TestCTracer(BaseTmpl):
         self.assertNotEqual(report1, report2)
 
     def test_c_cleanup(self):
-        tracer = _VizTracer()
+        tracer = VizTracer()
         tracer.start()
         fib(5)
         tracer.stop()
-        tracer.cleanup()
         tracer.clear()
-        tracer.cleanup()
+        tracer.clear()
+        tracer.clear()
 
 
 class TestCircularBuffer(BaseTmpl):
     def test_wrap(self):
-        tracer = _VizTracer(tracer_entries=10)
+        tracer = VizTracer(tracer_entries=10)
         tracer.start()
         fib(10)
         tracer.stop()
@@ -77,7 +78,7 @@ class TestCircularBuffer(BaseTmpl):
 
 class TestTracerFilter(BaseTmpl):
     def test_max_stack_depth(self):
-        tracer = _VizTracer(max_stack_depth=3)
+        tracer = VizTracer(max_stack_depth=3)
         tracer.start()
         fib(10)
         tracer.stop()
@@ -85,21 +86,21 @@ class TestTracerFilter(BaseTmpl):
         self.assertEqual(entries, 7)
 
     def test_include_files(self):
-        tracer = _VizTracer(include_files=["./src/"])
+        tracer = VizTracer(include_files=["./src/"])
         tracer.start()
         fib(10)
         tracer.stop()
         entries = tracer.parse()
         self.assertEqual(entries, 0)
 
-        tracer.include_files = [os.path.abspath("./")]
+        tracer = VizTracer(include_files=[os.path.abspath("./")])
         tracer.start()
         fib(10)
         tracer.stop()
         entries = tracer.parse()
         self.assertEqual(entries, 177)
 
-        tracer.include_files = ["./"]
+        tracer = VizTracer(include_files=["./"])
         tracer.start()
         fib(10)
         tracer.stop()
@@ -107,28 +108,28 @@ class TestTracerFilter(BaseTmpl):
         self.assertEqual(entries, 177)
 
     def test_exclude_files(self):
-        tracer = _VizTracer(exclude_files=["./src/"])
+        tracer = VizTracer(exclude_files=["./src/"])
         tracer.start()
         fib(10)
         tracer.stop()
         entries = tracer.parse()
         self.assertEqual(entries, 177)
 
-        tracer.exclude_files = [os.path.abspath("./")]
+        tracer = VizTracer(exclude_files=[os.path.abspath("./")])
         tracer.start()
         fib(10)
         tracer.stop()
         entries = tracer.parse()
         self.assertEqual(entries, 0)
 
-        tracer.exclude_files = ["./"]
+        tracer = VizTracer(exclude_files=["./"])
         tracer.start()
         fib(10)
         tracer.stop()
         entries = tracer.parse()
         self.assertEqual(entries, 0)
 
-        tracer.exclude_files = []
+        tracer = VizTracer(exclude_files=[])
         tracer.start()
         fib(10)
         tracer.stop()
@@ -136,10 +137,10 @@ class TestTracerFilter(BaseTmpl):
         self.assertEqual(entries, 177)
 
     def test_include_exclude_exception(self):
-        tracer = _VizTracer(exclude_files=["./src/"], include_files=["./"])
+        tracer = VizTracer(exclude_files=["./src/"], include_files=["./"])
         with self.assertRaises(Exception):
             tracer.start()
-        tracer = _VizTracer(exclude_files=["./src/"])
+        tracer = VizTracer(exclude_files=["./src/"])
         tracer.include_files = ["./"]
         with self.assertRaises(Exception):
             tracer.start()
@@ -148,7 +149,7 @@ class TestTracerFilter(BaseTmpl):
         tracer.stop()
 
     def test_ignore_c_function(self):
-        tracer = _VizTracer()
+        tracer = VizTracer()
         tracer.start()
         lst = []
         lst.append(1)
@@ -165,7 +166,7 @@ class TestTracerFilter(BaseTmpl):
         self.assertEqual(entries, 0)
 
     def test_ignore_frozen(self):
-        tracer = _VizTracer(ignore_frozen=True)
+        tracer = VizTracer(ignore_frozen=True)
         tracer.start()
         import random  # noqa: F401
         lst = []
@@ -177,7 +178,7 @@ class TestTracerFilter(BaseTmpl):
 
 class TestTracerFeature(BaseTmpl):
     def test_log_func_retval(self):
-        tracer = _VizTracer()
+        tracer = VizTracer()
         tracer.start()
         fib(5)
         tracer.stop()
@@ -194,25 +195,8 @@ class TestTracerFeature(BaseTmpl):
         self.assertTrue("args" in events[0]
                         and "return_value" in events[0]["args"])
 
-    def test_novdb(self):
-        tracer = _VizTracer(vdb=True)
-        tracer.start()
-        fib(5)
-        tracer.stop()
-        tracer.parse()
-        events = [e for e in tracer.data["traceEvents"] if e["ph"] != "M"]
-        self.assertTrue("caller_lineno" in events[0])
-
-        tracer = _VizTracer(vdb=False)
-        tracer.start()
-        fib(5)
-        tracer.stop()
-        tracer.parse()
-        events = [e for e in tracer.data["traceEvents"] if e["ph"] != "M"]
-        self.assertFalse("caller_lineno" in events[0])
-
     def test_log_func_args(self):
-        tracer = _VizTracer(log_func_args=True)
+        tracer = VizTracer(log_func_args=True)
         tracer.start()
         fib(5)
         tracer.stop()
@@ -220,9 +204,21 @@ class TestTracerFeature(BaseTmpl):
         events = [e for e in tracer.data["traceEvents"] if e["ph"] != "M"]
         self.assertTrue("args" in events[0] and "func_args" in events[0]["args"])
 
+    def test_log_func_repr(self):
+        def myrepr(obj):
+            return "deadbeef"
+        tracer = VizTracer(log_func_args=True, log_func_repr=myrepr)
+        tracer.start()
+        fib(5)
+        tracer.stop()
+        tracer.parse()
+        events = [e for e in tracer.data["traceEvents"] if e["ph"] != "M"]
+        self.assertTrue("args" in events[0] and "func_args" in events[0]["args"]
+                        and events[0]["args"]["func_args"]["n"] == "deadbeef")
+
     def test_log_gc(self):
         import gc
-        tracer = _VizTracer(log_gc=True)
+        tracer = VizTracer(log_gc=True)
         # do collect first to get rid of the garbage tracer
         gc.collect()
         self.assertTrue(tracer.log_gc)
@@ -239,7 +235,7 @@ class TestTracerFeature(BaseTmpl):
         self.assertEventNumber(tracer.data, 1)
 
     def test_min_duration(self):
-        tracer = _VizTracer(min_duration=100)
+        tracer = VizTracer(min_duration=100)
         tracer.start()
         a = []
         for _ in range(3):

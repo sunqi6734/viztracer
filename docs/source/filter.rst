@@ -42,8 +42,8 @@ OR
 
     tracer = VizTracer(max_stack_depth=10)
 
-Include Files
----------------
+Include and Exclude Files
+-------------------------
 
 You can include only certain files/folders to trace by
 
@@ -58,9 +58,6 @@ OR
 
     tracer = VizTracer(include_files=["./src"])
 
-Exclude Files
----------------
-
 Similarly, you can exclude certain files/folders to trace by
 
 .. code-block::
@@ -74,19 +71,22 @@ OR
 
     tracer = VizTracer(exclude_files=["./not_interested.py"])
 
+Notice this will have a significant negative impact on performance,
+as VizTracer needs to check every function entry to see if it's in the list.
+
 Ignore C Function
 -----------------
 
 By default, VizTracer will trace both python and C functions. You can turn off tracing C functions by
 
-.. code-block:: 
+.. code-block::
 
     viztracer --ignore_c_function my_script.py
 
 OR
 
 .. code-block:: python
-    
+
     tracer = VizTracer(ignore_c_function=True)
 
 Since most of the builtin functions(like ``append`` or ``len``) are C functions which are frequently called,
@@ -98,14 +98,14 @@ Ignore Non File
 
 You can ask VizTracer not to trace any functions that are not in a valid file(mostly import stuff) using ``ignore_frozen``
 
-.. code-block:: 
+.. code-block::
 
     viztracer --ignore_frozen my_script.py
 
 OR
 
 .. code-block:: python
-    
+
     tracer = VizTracer(ignore_frozen=True)
 
 
@@ -128,7 +128,7 @@ Log Sparse
 ----------
 
 You can make VizTracer log only certain functions using ``--log_sparse``. This is helpful when you are only interested in the time spent on
-specific functions for a big picture on larger projects. 
+specific functions for a big picture on larger projects.
 
 First, you need to add decorator ``@log_sparse`` on the function you want to log
 
@@ -149,15 +149,27 @@ First, you need to add decorator ``@log_sparse`` on the function you want to log
     def function_you_want_to_log():
         # function body
 
+    # Use dynamic_tracer_check=True if you use tracer as a context manager (or with %%viztracer).
+    @log_sparse(dynamic_tracer_check=True)
+    def function_you_want_to_log():
+        # function body
+
+    with VizTracer(log_sparse=True):
+        function_you_want_to_log()
+
 Then just call viztracer with ``--log_sparse``
 
-.. code-block:: 
+.. code-block::
 
     viztracer --log_sparse your_script.py
-    
+
 When you are using ``--log_sparse``, due to the nature of the recording, some advanced features may not work with it.
 
 You can leave ``@log_sparse`` as it is when you are not running the script with VizTracer. It will be like a no-op
 
 If you want to log a piece of code, rather than a full function, please check :ref:`duration_event_label`. Duration Event
 is compatible with ``log_sparse``
+
+To use ``@log_sparse`` in conjunction with a context manager, you must define decorating functions within the created
+context, or set the `dynamic_tracer_check=True`` argument of decorator. The second option leads to runtime checks,
+so it increases the overhead.

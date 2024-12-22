@@ -5,6 +5,9 @@ VizTracer features with many extra log possibilities **without even changing you
 You can start VizTracer from command line and use command line arguments to control what
 you need to log.
 
+Most of the features analyzes the AST generated from the source code and add nodes into it, so
+the overhead is minimal. However, some features like ``log_func_args`` will introduce a large overhead.
+
 Log Variable
 ------------
 
@@ -140,6 +143,25 @@ You can enable this feature in command line or using inline.
     
     tracer = VizTracer(log_func_retval=True)
 
+Log Function Argument And Return Value With Custom Function
+-----------------------------------------------------------
+
+You can log every function's arguments and return value with a custom function. You can feed your own function to ``VizTracer``
+
+.. code-block:: python
+
+    def myrepr(obj):
+        if isinstance(obj, MyClass):
+            return f"MyClass({obj.value})"
+        return repr(obj)
+
+    tracer = VizTracer(log_func_args=True, log_func_repr=myrepr)
+
+From the CLI, you can use the ``--log_func_with_objprint`` option to log with objprint
+
+.. code-block::
+
+    viztracer --log_func_args --log_func_with_objprint my_script.py
 
 Log Print
 ---------
@@ -195,7 +217,8 @@ data as Instant Events.
 
 .. code-block:: python
 
-    from viztracer import VizTracer, VizLoggingHandler
+    from viztracer import VizTracer
+    from viztracer.vizlogging import VizLoggingHandler
 
     tracer = VizTracer()
     handler = VizLoggingHandler()

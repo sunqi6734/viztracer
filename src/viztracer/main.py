@@ -5,10 +5,11 @@ import argparse
 import atexit
 import base64
 import builtins
-import configparser
+import io
 import json
 import multiprocessing.util  # type: ignore
 import os
+import platform
 import shutil
 import signal
 import sys
@@ -16,21 +17,21 @@ import tempfile
 import threading
 import time
 import types
-from typing import Any, Dict, List, Optional, Tuple
+import re
+from types import CodeType
+from typing import Any, Optional, Union
 
 from . import __version__
-from .attach_process.add_code_to_python_process import run_python_code  # type: ignore
 from .code_monkey import CodeMonkey
 from .patch import install_all_hooks
 from .report_builder import ReportBuilder
-from .util import time_str_to_us, color_print, same_line_print, pid_exists
+from .util import color_print, pid_exists, same_line_print, time_str_to_us, unique_file_name
 from .viztracer import VizTracer
-
 
 # For all the procedures in VizUI, return a tuple as the result
 # The first element bool indicates whether the procedure succeeds
 # The second element is the error message if it fails.
-VizProcedureResult = Tuple[bool, Optional[str]]
+VizProcedureResult = tuple[bool, Optional[str]]
 
 
 class VizUI:
@@ -40,7 +41,7 @@ class VizUI:
         self.verbose: int = 1
         self.ofile: str = "result.json"
         self.options: argparse.Namespace = argparse.Namespace()
-        self.args: List[str] = []
+        self.args: list[str] = []
         self._exiting: bool = False
         self.multiprocess_output_dir: str = tempfile.mkdtemp()
         self.cwd: str = os.getcwd()
@@ -55,8 +56,11 @@ class VizUI:
                             help="specify rcfile for viztracer")
         parser.add_argument("--tracer_entries", nargs="?", type=int, default=1000000,
                             help="size of circular buffer. How many entries can it store")
-        parser.add_argument("--output_file", "-o", nargs="?", default=None,
-                            help="output file path. End with .json or .html or .gz")
+        filename_group = parser.add_mutually_exclusive_group()
+        filename_group.add_argument("--output_file", "-o", nargs="?", default=None,
+                                    help="output file path. End with .json or .html or .gz")
+        filename_group.add_argument("--unique_output_file", "-u", action="store_true", default=False,
+                                    help="Use a unique file name for each run")
         parser.add_argument("--output_dir", nargs="?", default=None,
                             help="output directory. Should only be used when --pid_suffix is used")
         parser.add_argument("--file_info", action="store_true", default=False,
@@ -85,6 +89,8 @@ class VizUI:
                             help="log functions in exit functions like atexit")
         parser.add_argument("--log_func_retval", action="store_true", default=False,
                             help="log return value of the function in the report")
+        parser.add_argument("--log_func_with_objprint", action="store_true", default=False,
+                            help="use objprint for function argument and return value")
         parser.add_argument("--log_print", action="store_true", default=False,
                             help="replace all print() function to adding an event to the result")
         parser.add_argument("--log_sparse", action="store_true", default=False,
@@ -93,6 +99,8 @@ class VizUI:
                             help="log all function arguments, this will introduce large overhead")
         parser.add_argument("--log_gc", action="store_true", default=False,
                             help="log ref cycle garbage collection operations")
+        parser.add_argument("--log_torch", action="store_true", default=False,
+                            help="log all the supported torch events together with the trace")
         parser.add_argument("--log_var", nargs="*", default=None,
                             help="log variable with specified names")
         parser.add_argument("--log_number", nargs="*", default=None,
@@ -125,14 +133,16 @@ class VizUI:
                             help="Process VizTracer specific comments")
         parser.add_argument("--minimize_memory", action="store_true", default=False,
                             help="Use json.dump to dump chunks to file to save memory")
-        parser.add_argument("--vdb", action="store_true", default=False,
-                            help="Instrument for vdb, will increase the overhead")
         parser.add_argument("--pid_suffix", action="store_true", default=False,
                             help=("append pid to file name. "
                                   "This should be used when you try to trace multi process programs. "
                                   "Will by default generate json files"))
         parser.add_argument("--module", "-m", nargs="?", default=None,
                             help="run module with VizTracer")
+        parser.add_argument("--compress", nargs="?", default=None,
+                            help="Compress a json report to a compact cvf format")
+        parser.add_argument("--decompress", nargs="?", default=None,
+                            help="Decompress a compressed cvf file to a json format")
         parser.add_argument("--combine", nargs="*", default=[],
                             help=("combine all json reports to a single report. "
                                   "Specify all the json reports you want to combine"))
@@ -154,12 +164,18 @@ class VizUI:
     def load_config_file(self, filename: str = ".viztracerrc") -> argparse.Namespace:
         ret = argparse.Namespace()
         if os.path.exists(filename):
+            import configparser
             cfg_parser = configparser.ConfigParser()
             cfg_parser.read(filename)
             if "default" not in cfg_parser:
                 raise ValueError("Config file does not contain [default] section")
             for action in self.parser._actions:
                 if hasattr(action, "dest") and action.dest in cfg_parser["default"]:
+                    convert = action.type if action.type is not None else str
+                    if not callable(convert):
+                        # This only happens when action.type is not None but not a callable
+                        # This should not happen in normal case
+                        raise ValueError(f"Invalid action type {action.type}")  # pragma: no cover
                     if action.nargs == 0:
                         setattr(ret, action.dest, action.const)
                     elif action.nargs is None or action.nargs == "?":
@@ -169,10 +185,8 @@ class VizUI:
                             # when it's a store, but with type == bool
                             setattr(ret, action.dest, cfg_parser["default"].getboolean(action.dest))
                         else:
-                            convert = action.type if action.type is not None else str
                             setattr(ret, action.dest, convert(cfg_parser["default"][action.dest]))
                     else:
-                        convert = action.type if action.type is not None else str
                         setattr(ret, action.dest, [convert(val) for val in cfg_parser["default"][action.dest].strip().split()])
         else:
             if filename != ".viztracerrc":
@@ -180,7 +194,7 @@ class VizUI:
                 raise FileNotFoundError(f"{filename} does not exist")
         return ret
 
-    def parse(self, argv: List[str]) -> VizProcedureResult:
+    def parse(self, argv: list[str]) -> VizProcedureResult:
         # If -- or --run exists, all the commands after --/--run are the commands we need to run
         # We need to filter those out, they might conflict with our arguments
         idx: Optional[int] = None
@@ -204,6 +218,13 @@ class VizUI:
         if options.quiet:
             self.verbose = 0
 
+        if options.unique_output_file:
+            exec_name = "python"
+            if options.module:
+                exec_name = options.module
+            elif command:
+                exec_name = command[0]
+            self.ofile = unique_file_name(exec_name)
         if options.output_file:
             self.ofile = options.output_file
         elif options.pid_suffix:
@@ -233,6 +254,12 @@ class VizUI:
         except ValueError:
             return False, f"Can't convert {options.min_duration} to time. Format should be 0.3ms or 13us"
 
+        if options.log_torch:
+            try:
+                import torch  # type: ignore  # noqa: F401
+            except ImportError:
+                return False, "torch is not installed"
+
         self.options, self.command = options, command
         self.init_kwargs = {
             "tracer_entries": options.tracer_entries,
@@ -245,12 +272,13 @@ class VizUI:
             "ignore_frozen": options.ignore_frozen,
             "log_func_retval": options.log_func_retval,
             "log_func_args": options.log_func_args,
+            "log_func_with_objprint": options.log_func_with_objprint,
             "log_print": options.log_print,
             "log_gc": options.log_gc,
             "log_sparse": options.log_sparse,
             "log_async": options.log_async,
             "log_audit": options.log_audit,
-            "vdb": options.vdb,
+            "log_torch": options.log_torch,
             "pid_suffix": True,
             "file_info": False,
             "register_global": True,
@@ -259,7 +287,8 @@ class VizUI:
             "min_duration": min_duration,
             "sanitize_function_name": options.sanitize_function_name,
             "dump_raw": True,
-            "minimize_memory": options.minimize_memory
+            "minimize_memory": options.minimize_memory,
+            "process_name": None,
         }
 
         return True, None
@@ -299,6 +328,10 @@ class VizUI:
             return self.run_module()
         elif self.command:
             return self.run_command()
+        elif self.options.compress:
+            return self.run_compress()
+        elif self.options.decompress:
+            return self.run_decompress()
         elif self.options.combine:
             return self.run_combine(files=self.options.combine)
         elif self.options.align_combine:
@@ -307,9 +340,15 @@ class VizUI:
             self.parser.print_help()
             return True, None
 
-    def run_code(self, code: Any, global_dict: Dict[str, Any]) -> VizProcedureResult:
+    def run_code(self, code: Union[CodeType, str], global_dict: dict[str, Any]) -> VizProcedureResult:
         options = self.options
         self.parent_pid = os.getpid()
+
+        if options.subprocess_child:
+            if options.cmd_string is not None:
+                self.init_kwargs["process_name"] = "python -c"
+            else:
+                self.init_kwargs["process_name"] = sys.argv[0]
 
         tracer = VizTracer(**self.init_kwargs)
         self.tracer = tracer
@@ -324,6 +363,7 @@ class VizUI:
         signal.signal(signal.SIGTERM, term_handler)
 
         if options.subprocess_child:
+            tracer.label_file_to_write()
             multiprocessing.util.Finalize(tracer, tracer.exit_routine, exitpriority=-1)
         else:
             multiprocessing.util.Finalize(self, self.exit_routine, exitpriority=-1)
@@ -334,7 +374,7 @@ class VizUI:
         exec(code, global_dict)
 
         if not options.log_exit:
-            tracer.stop()
+            tracer.stop(stop_option="flush_as_finish")
 
         # The user code may forked, check it because Finalize won't execute
         # if the pid is not the same
@@ -345,13 +385,10 @@ class VizUI:
         # threading._threading_atexits or it will deadlock if not explicitly
         # release the resource in the code
         # Python 3.9+ has this issue
-        try:
-            if threading._threading_atexits:  # type: ignore
-                for atexit_call in threading._threading_atexits:  # type: ignore
-                    atexit_call()
-                threading._threading_atexits = []  # type: ignore
-        except AttributeError:
-            pass
+        if threading._threading_atexits:  # type: ignore
+            for atexit_call in threading._threading_atexits:  # type: ignore
+                atexit_call()
+            threading._threading_atexits = []  # type: ignore
 
         return True, None
 
@@ -360,7 +397,7 @@ class VizUI:
         code = "run_module(modname, run_name='__main__', alter_sys=True)"
         global_dict = {
             "run_module": runpy.run_module,
-            "modname": self.options.module
+            "modname": self.options.module,
         }
         sys.argv = [self.options.module] + self.command[:]
         sys.path.insert(0, os.getcwd())
@@ -372,7 +409,8 @@ class VizUI:
         setattr(main_mod, "__file__", "<string>")
         setattr(main_mod, "__builtins__", globals()["__builtins__"])
 
-        sys.modules["__main__"] = main_mod
+        # __mp_main__ should be a duplicate of __main__ for pickle
+        sys.modules["__main__"] = sys.modules["__mp_main__"] = main_mod
         code = compile(cmd_string, "<string>", "exec")
         sys.argv = ["-c"] + self.command[:]
         return self.run_code(code, main_mod.__dict__)
@@ -383,9 +421,12 @@ class VizUI:
         file_name = command[0]
         search_result = self.search_file(file_name)
         if not search_result:
-            return False, "No such file as {}".format(file_name)
+            return False, f"No such file as {file_name}"
+        if file_name.endswith(".json"):
+            return False, f"viztracer can't run json file, did you mean \"vizviewer {file_name}\"?"
         file_name = search_result
-        with open(file_name, "rb") as f:
+
+        with io.open_code(file_name) as f:
             code_string = f.read()
         if options.magic_comment or options.log_var or options.log_number or options.log_attr or \
                 options.log_func_exec or options.log_exception or options.log_func_entry:
@@ -410,13 +451,58 @@ class VizUI:
         setattr(main_mod, "__file__", os.path.abspath(file_name))
         setattr(main_mod, "__builtins__", globals()["__builtins__"])
 
-        sys.modules["__main__"] = main_mod
+        # __mp_main__ should be a duplicate of __main__ for pickle
+        sys.modules["__main__"] = sys.modules["__mp_main__"] = main_mod
         code = compile(code_string, os.path.abspath(file_name), "exec")
         sys.path.insert(0, os.path.dirname(file_name))
         sys.argv = command[:]
         return self.run_code(code, main_mod.__dict__)
 
-    def run_combine(self, files: List[str], align: bool = False) -> VizProcedureResult:
+    def run_compress(self):
+        file_to_compress = self.options.compress
+        if not file_to_compress or not os.path.exists(file_to_compress):
+            return False, f"Unable to find file {file_to_compress}"
+
+        if not file_to_compress.endswith(".json"):
+            return False, "Only support compressing json report"
+
+        if not self.options.output_file:
+            output_file = "result.cvf"
+        else:
+            output_file = self.options.output_file
+
+        from viztracer.vcompressor import VCompressor
+
+        compressor = VCompressor()
+
+        with open(file_to_compress) as f:
+            data = json.load(f)
+            compressor.compress(data, output_file)
+
+        return True, None
+
+    def run_decompress(self):
+        file_to_decompress = self.options.decompress
+        if not file_to_decompress or not os.path.exists(file_to_decompress):
+            return False, f"Unable to find file {file_to_decompress}"
+
+        if not self.options.output_file:
+            output_file = "result.json"
+        else:
+            output_file = self.options.output_file
+
+        from viztracer.vcompressor import VCompressor
+
+        compressor = VCompressor()
+
+        data = compressor.decompress(file_to_decompress)
+
+        with open(output_file, "w") as f:
+            json.dump(data, f)
+
+        return True, None
+
+    def run_combine(self, files: list[str], align: bool = False) -> VizProcedureResult:
         options = self.options
         builder = ReportBuilder(files, align=align, minimize_memory=options.minimize_memory)
         if options.output_file:
@@ -431,15 +517,28 @@ class VizUI:
         print(__version__)
         return True, None
 
-    def attach(self) -> VizProcedureResult:
-        pid = self.options.attach
-        interval = self.options.t
-
+    def _check_attach_availability(self) -> tuple[bool, Optional[str]]:
         if sys.platform == "win32":
             return False, "VizTracer does not support this feature on Windows"
 
+        if sys.platform == "darwin" and "arm" in platform.processor():
+            return False, "VizTracer does not support this feature on Apple Silicon"
+
         if sys.platform == "darwin" and sys.version_info >= (3, 11):
-            print("Warning: attach may not work on 3.11+ on Mac due to hardened runtime")
+            color_print("WARNING", "Warning: attach may not work on 3.11+ on Mac due to hardened runtime")
+
+        return True, None
+
+    def attach(self) -> VizProcedureResult:
+        from .attach_process.add_code_to_python_process import run_python_code  # type: ignore
+
+        pid = self.options.attach
+        interval = self.options.t
+
+        success, err_msg = self._check_attach_availability()
+
+        if not success:
+            return False, err_msg
 
         if not pid_exists(pid):
             return False, f"pid {pid} does not exist!"
@@ -451,7 +550,7 @@ class VizUI:
             "file_info": True,
             "register_global": True,
             "dump_raw": False,
-            "verbose": 1 if self.verbose != 0 else 0
+            "verbose": 1 if self.verbose != 0 else 0,
         })
         b64s = base64.urlsafe_b64encode(json.dumps(self.init_kwargs).encode("ascii")).decode("ascii")
         start_code = f"import viztracer.attach; viztracer.attach.start_attach(\\\"{b64s}\\\")"
@@ -467,15 +566,19 @@ class VizUI:
             return False, f"Failed to inject code [err {retcode}]"
 
         print("Use the following command to open the report:")
-        color_print("OKGREEN", "vizviewer {}".format(self.init_kwargs["output_file"]))
+        color_print("OKGREEN", f"vizviewer {self.init_kwargs['output_file']}")
 
         return True, None
 
     def uninstall(self) -> VizProcedureResult:
+        from .attach_process.add_code_to_python_process import run_python_code  # type: ignore
+
         pid = self.options.uninstall
 
-        if sys.platform == "win32":
-            return False, "VizTracer does not support this feature on Windows"
+        success, err_msg = self._check_attach_availability()
+
+        if not success:
+            return False, err_msg
 
         if not pid_exists(pid):
             return False, f"pid {pid} does not exist!"
@@ -489,8 +592,11 @@ class VizUI:
         return True, None
 
     def attach_installed(self) -> VizProcedureResult:
-        if sys.platform == "win32":
-            return False, "VizTracer does not support this feature on Windows"
+        success, err_msg = self._check_attach_availability()
+
+        if not success:
+            return False, err_msg
+
         pid = self.options.attach_installed
         interval = self.options.t
         try:
@@ -507,7 +613,7 @@ class VizUI:
 
         return True, None
 
-    def _wait_attach(self, interval) -> None:
+    def _wait_attach(self, interval: float) -> None:
         # interval == 0 means waiting for CTRL+C
         try:
             if interval > 0:
@@ -524,6 +630,12 @@ class VizUI:
         # This function will only be called from main process
         options = self.options
         ofile = self.ofile
+        if options.pid_suffix:
+            prefix, suffix = os.path.splitext(self.ofile)
+            prefix_pid = f"{prefix}_{os.getpid()}"
+            ofile = prefix_pid + suffix
+        else:
+            ofile = self.ofile
 
         self.wait_children_finish()
         builder = ReportBuilder(
@@ -538,7 +650,18 @@ class VizUI:
         try:
             if any((f.endswith(".viztmp") for f in os.listdir(self.multiprocess_output_dir))):
                 same_line_print("Wait for child processes to finish, Ctrl+C to skip")
-                while any((f.endswith(".viztmp") for f in os.listdir(self.multiprocess_output_dir))):
+                while True:
+                    remain_viztmp = [f for f in os.listdir(self.multiprocess_output_dir) if f.endswith(".viztmp")]
+                    for viztmp_file in remain_viztmp:
+                        match = re.search(r'result_(\d+).json.viztmp', viztmp_file)
+                        if match:
+                            pid = int(match.group(1))
+                            if pid_exists(pid):
+                                break
+                        else:   # pragma: no cover
+                            color_print("WARNING", f"Unknown viztmp file {viztmp_file}")
+                    else:
+                        break
                     time.sleep(0.5)
         except KeyboardInterrupt:
             pass
@@ -553,7 +676,7 @@ class VizUI:
                 self.save()
                 if self.options.open:  # pragma: no cover
                     import subprocess
-                    subprocess.run(["vizviewer", "--once", os.path.abspath(self.ofile)])
+                    subprocess.run([sys.executable, "-m", "viztracer.viewer", "--once", os.path.abspath(self.ofile)])
 
 
 def main():

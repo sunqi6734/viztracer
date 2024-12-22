@@ -1,8 +1,9 @@
 # Licensed under the Apache License: http://www.apache.org/licenses/LICENSE-2.0
 # For details: https://github.com/gaogaotiantian/viztracer/blob/master/NOTICE.txt
 
-from viztracer.event_base import _EventBase
 from viztracer import VizTracer
+from viztracer.event_base import _EventBase
+
 from .base_tmpl import BaseTmpl
 
 
@@ -15,19 +16,19 @@ class TestInvalidArgs(BaseTmpl):
             "include_files": ["./src"],
             "exclude_files": ["./src"],
             "ignore_c_function": ["hello", 1, "True"],
-            "log_print": ["hello", 1, "True"],
             "log_func_retval": ["hello", 1, "True"],
             "log_gc": ["hello", 1, "True"],
             "log_func_args": ["hello", 1, "True"],
-            "vdb": ["hello", 1, "True"],
             "min_duration": ["0.1.0", "12", "3us"],
             "ignore_frozen": ["hello", 1, "True"],
-            "log_async": ["hello", 1, "True"]
+            "log_async": ["hello", 1, "True"],
+            "log_func_repr": ["hello", 1, True],
         }
         tracer = VizTracer(verbose=0)
         for args, vals in invalid_args.items():
             for val in vals:
-                self.assertRaises(ValueError, tracer.__setattr__, args, val)
+                with self.assertRaises((ValueError, TypeError)):
+                    setattr(tracer, args, val)
 
 
 class TestInvalidOperation(BaseTmpl):
@@ -43,6 +44,10 @@ class TestInvalidOperation(BaseTmpl):
         tracer.stop()
         with self.assertRaises(Exception):
             tracer.save("test.invalid")
+
+    def test_log_func_conflict(self):
+        with self.assertRaises(ValueError):
+            _ = VizTracer(log_func_repr=repr, log_func_with_objprint=True, verbose=0)
 
     def test_add_invalid_variable(self):
         tracer = VizTracer(verbose=0)

@@ -1,13 +1,26 @@
 # Licensed under the Apache License: http://www.apache.org/licenses/LICENSE-2.0
 # For details: https://github.com/gaogaotiantian/viztracer/blob/master/NOTICE.txt
 
-from contextlib import contextmanager
 import inspect
-from itertools import product
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
+from itertools import product
 from unittest import SkipTest
+
+
+class PackageConfig:
+    def __init__(self, pkg_config):
+        self.pkg_config = pkg_config
+
+    def has(self, package):
+        for pkg in self.pkg_config:
+            if f"~{package}" in pkg:
+                return False
+            elif package in pkg:
+                return True
+        return False
 
 
 def get_curr_packages():
@@ -21,7 +34,7 @@ def get_curr_packages():
 def package_keeper():
     orig_packages = get_curr_packages()
     try:
-        yield
+        yield orig_packages
     finally:
         curr_packages = get_curr_packages()
         for pkg in curr_packages:
@@ -30,10 +43,20 @@ def package_keeper():
         subprocess.check_call([sys.executable, "-m", "pip", "install", *orig_packages], stdout=subprocess.DEVNULL)
 
 
-def setup_env(pkg_matrix):
+def setup_env(pkg_matrix, orig_packages):
+    def pkg_key(pkg):
+        # Put the the config that already meets the requirement first
+        for package in orig_packages:
+            if pkg.startswith("~") and pkg[1:] not in package:
+                return 0
+            elif pkg in package:
+                return 0
+        return 1
+
     if isinstance(pkg_matrix[0], list):
         pkg_config_iter = product(*pkg_matrix)
     else:
+        pkg_matrix.sort(key=pkg_key)
         pkg_config_iter = product(pkg_matrix)
     for pkg_config in pkg_config_iter:
         for pkg in pkg_config:
@@ -41,7 +64,7 @@ def setup_env(pkg_matrix):
                 subprocess.check_call([sys.executable, "-m", "pip", "uninstall", "-y", pkg[1:]], stdout=subprocess.DEVNULL)
             else:
                 subprocess.check_call([sys.executable, "-m", "pip", "install", pkg], stdout=subprocess.DEVNULL)
-        yield
+        yield PackageConfig(pkg_config)
 
 
 def package_matrix(pkg_matrix):
@@ -50,8 +73,8 @@ def package_matrix(pkg_matrix):
 
         def wrapper(*args, **kwargs):
             if os.getenv("GITHUB_ACTIONS"):
-                with package_keeper():
-                    for _ in setup_env(pkg_matrix):
+                with package_keeper() as orig_packages:
+                    for _ in setup_env(pkg_matrix, orig_packages):
                         try:
                             func(*args, **kwargs)
                         except SkipTest:
@@ -64,15 +87,16 @@ def package_matrix(pkg_matrix):
 
         if os.getenv("GITHUB_ACTIONS"):
             def new_run(self, result=None):
-                with package_keeper():
-                    for _ in setup_env(pkg_matrix):
-                        try:
-                            self._run(result)
-                        except SkipTest:
-                            pass
+                with package_keeper() as orig_packages:
+                    for pkg_config in setup_env(pkg_matrix, orig_packages):
+                        self.pkg_config = pkg_config
+                        self._run(result)
+                        self.pkg_config = None
 
             cls._run = cls.run
             cls.run = new_run
+        else:
+            cls.pkg_config = PackageConfig(get_curr_packages())
         return cls
 
     def inner(func_or_cls):

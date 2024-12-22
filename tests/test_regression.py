@@ -12,8 +12,8 @@ import unittest
 import viztracer
 from viztracer import VizTracer, ignore_function
 
-from .cmdline_tmpl import CmdlineTmpl
 from .base_tmpl import BaseTmpl
+from .cmdline_tmpl import CmdlineTmpl
 
 
 class TestIssue1(BaseTmpl):
@@ -72,7 +72,7 @@ class TestSegFaultRegression(BaseTmpl):
         except Exception:
             pass
         tracer.stop()
-        tracer.cleanup()
+        tracer.clear()
 
 
 class TestFunctionArg(BaseTmpl):
@@ -124,6 +124,7 @@ term_code = """
 import time
 a = []
 a.append(1)
+print("ready", flush=True)
 for i in range(10):
     time.sleep(1)
 """
@@ -133,7 +134,7 @@ class TestTermCaught(CmdlineTmpl):
     @unittest.skipIf(sys.platform == "win32", "windows does not have graceful term")
     def test_term(self):
         self.template(["viztracer", "-o", "term.json", "cmdline_test.py"],
-                      expected_output_file="term.json", script=term_code, send_sig=signal.SIGTERM)
+                      expected_output_file="term.json", script=term_code, send_sig=(signal.SIGTERM, "ready"))
 
 
 class TestIssue42(BaseTmpl):
@@ -209,8 +210,7 @@ class TestIssue119(CmdlineTmpl):
                     self.template(
                         ["viztracer", "-o", "result.json", "cmdline_test.py", script_dir],
                         script=issue119_code,
-                        expected_output_file=filepath
-                    )
+                        expected_output_file=filepath)
                 finally:
                     os.chdir(cwd)
 
@@ -234,11 +234,9 @@ class TestIssue121(CmdlineTmpl):
             fib_count = sum(["fib" in event["name"] for event in data["traceEvents"]])
             self.assertEqual(fib_count, 15)
 
-        self.template(
-            ["viztracer", "cmdline_test.py", "--log_exit"],
-            script=issue121_code,
-            check_func=check_func
-        )
+        self.template(["viztracer", "cmdline_test.py", "--log_exit"],
+                      script=issue121_code,
+                      check_func=check_func)
 
 
 issue141_code = """
@@ -310,6 +308,30 @@ class TestIssue162(CmdlineTmpl):
                       script=issue162_code_os_popen, expected_stdout=r".*test_issue162.*")
 
 
+class TestIssue508(CmdlineTmpl):
+    def test_issue508(self):
+        script = """
+            import inspect
+            import os
+            import viztracer
+
+            exclude = os.path.dirname(inspect.__file__)
+
+            def call_self(n):
+                if n == 0:
+                    return
+                call_self(n - 1)
+
+            with viztracer.VizTracer(exclude_files=[exclude], max_stack_depth=6):
+                inspect.getsource(call_self)
+                call_self(10)
+        """
+
+        self.template(["python", "cmdline_test.py"], script=script,
+                      expected_output_file="result.json",
+                      expected_entries=6)
+
+
 file_timestamp_disorder = """
 def g():
     pass
@@ -345,7 +367,9 @@ class TestTimestampDisorder(CmdlineTmpl):
 
 issue285_code = """
 import threading
-from viztracer import get_tracer, VizCounter, VizObject
+from viztracer import get_tracer
+from viztracer.vizcounter import VizCounter
+from viztracer.vizobject import VizObject
 
 
 def fib(n):
@@ -387,3 +411,72 @@ class TestEscapeString(CmdlineTmpl):
                       expected_output_file="result.json",
                       script=issue285_code,
                       expected_stdout=".*Total Entries:.*")
+
+
+wait_for_child = """
+import os
+import time
+import multiprocessing
+
+def target(conn):
+    conn.recv()
+    conn.send("ready")
+    conn.recv()
+    if os.getenv("GITHUB_ACTIONS"):
+        time.sleep(3)
+    else:
+        time.sleep(1)
+
+if __name__ == '__main__':
+    parent, child = multiprocessing.Pipe()
+    p = multiprocessing.Process(target=target, args=(child,))
+    p.start()
+    # The main process will join the child in multiprocessing.process._children.
+    # This is a hack to make sure the main process won't join the child process,
+    # so we can test the VizUI.wait_children_finish function
+    multiprocessing.process._children = set()
+    parent.send("check")
+    parent.recv()
+    parent.send("exit")
+"""
+
+wait_for_terminated_child = """
+import time
+import os
+import signal
+import multiprocessing
+
+def target(conn):
+    conn.recv()
+    conn.send("ready")
+    conn.recv()
+    if os.getenv("GITHUB_ACTIONS"):
+        time.sleep(3)
+    else:
+        time.sleep(1)
+    os.kill(os.getpid(), signal.SIGTERM)
+
+if __name__ == '__main__':
+    parent, child = multiprocessing.Pipe()
+    p = multiprocessing.Process(target=target, args=(child,))
+    p.start()
+    # The main process will join the child in multiprocessing.process._children.
+    # This is a hack to make sure the main process won't join the child process,
+    # so we can test the VizUI.wait_children_finish function
+    multiprocessing.process._children = set()
+    parent.send("check")
+    parent.recv()
+    parent.send("exit")
+"""
+
+
+class TestWaitForChild(CmdlineTmpl):
+    def test_child_process_exits_normally(self):
+        self.template(["viztracer", "-o", "result.json", "cmdline_test.py"],
+                      expected_output_file="result.json", expected_stdout=r"Wait",
+                      script=wait_for_child)
+
+    def test_child_process_exits_abnormally(self):
+        self.template(["viztracer", "-o", "result.json", "cmdline_test.py"],
+                      expected_output_file="result.json", expected_stdout=r"Wait",
+                      script=wait_for_terminated_child)

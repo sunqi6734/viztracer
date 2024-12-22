@@ -1,7 +1,7 @@
 Installation
 ============
 
-VizTracer requires python 3.6+ and can work on Linux/MacOs/Windows. No other dependency. For now, VizTracer only supports CPython.
+VizTracer works with python 3.9+ on Linux/MacOs/Windows. No other dependency. For now, VizTracer only supports CPython.
 
 The preferred way to install VizTracer is via pip
 
@@ -9,17 +9,24 @@ The preferred way to install VizTracer is via pip
 
     pip install viztracer
 
-
-You can also download the source code and build it yourself.
-
-Even though VizTracer functions without any other packages, it is still recommended to install the following packages to have a better performance.
-
-* orjson: better json dump/load performance
-* rich: better interactive shell for vdb
+You can also install with conda
 
 .. code-block::
 
-    pip install orjson rich
+    conda install conda-forge::viztracer
+
+    // Or if you already have conda forge set up
+    conda install viztracer
+
+
+You can also download the source code and build it yourself.
+
+Even though VizTracer functions without any other packages,
+``orjson`` could improve the performance of json dump/load.
+
+.. code-block::
+
+    pip install orjson
 
 Or you can install *full* version of viztracer:
 

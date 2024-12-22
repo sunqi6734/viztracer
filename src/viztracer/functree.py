@@ -1,26 +1,25 @@
 # Licensed under the Apache License: http://www.apache.org/licenses/LICENSE-2.0
 # For details: https://github.com/gaogaotiantian/viztracer/blob/master/NOTICE.txt
 
-import copy
 import bisect
+import copy
 import re
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any, Generator, Optional
 
 
 class FuncTreeNode:
     name_regex = r"(.*) \((.*?):([0-9]+)\)"
 
-    def __init__(self, event: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(self, event: Optional[dict[str, Any]] = None) -> None:
         self.filename: Optional[str] = None
         self.lineno: Optional[int] = None
-        self.caller_lineno: int = -1
         self.is_python: Optional[bool] = False
         self.funcname: Optional[str] = None
         self.parent: Optional[FuncTreeNode] = None
-        self.children: List[FuncTreeNode] = []
+        self.children: list[FuncTreeNode] = []
         self.start: float = - (2 ** 64)
         self.end: float = 2 ** 64
-        self.event: Dict[str, Any] = {}
+        self.event: dict[str, Any] = {}
         if event is None:
             self.event = {"name": "__ROOT__"}
             self.fullname = "__ROOT__"
@@ -35,8 +34,6 @@ class FuncTreeNode:
                 self.funcname = m.group(1)
                 self.filename = m.group(2)
                 self.lineno = int(m.group(3))
-            if "caller_lineno" in self.event:
-                self.caller_lineno = self.event["caller_lineno"]
 
     def is_ancestor(self, other: "FuncTreeNode") -> bool:
         return self.start < other.start and self.end > other.end
@@ -104,7 +101,7 @@ class FuncTree:  # pragma: no cover
     def is_same(self, other: "FuncTree") -> bool:
         return self.root.is_same(other.root)
 
-    def add_event(self, event: Dict[str, Any]) -> None:
+    def add_event(self, event: dict[str, Any]) -> None:
         node = FuncTreeNode(event)
 
         self.curr.adopt(node)

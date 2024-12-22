@@ -2,9 +2,11 @@
 
 import math
 import os
-import numpy
-from viztracer import VizTracer, VizCounter
 
+import numpy
+
+from viztracer import VizTracer
+from viztracer.vizcounter import VizCounter
 
 # List of input, output pairs
 train_data = (
@@ -26,9 +28,8 @@ def _error(example_no, data_set="train"):
     :param example_no: example number whose error has to be checked
     :return: error in example pointed by example number.
     """
-    return calculate_hypothesis_value(example_no, data_set) - output(
-        example_no, data_set
-    )
+    return calculate_hypothesis_value(example_no, data_set) - \
+        output(example_no, data_set)
 
 
 def _hypothesis_value(data_input_tuple):

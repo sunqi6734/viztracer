@@ -24,15 +24,10 @@ struct FEEData {
             const char* ml_name;
             const char* tp_name;
         };
-        struct {
-            PyObject* co_name;
-            PyObject* co_filename;
-            int co_firstlineno;
-        };
+        PyCodeObject* code;
     };
     int type;
-    int caller_lineno;
-    double dur;
+    int64_t dur;
     PyObject* asyncio_task;
 };
 
@@ -56,7 +51,7 @@ struct ObjectData {
 
 struct EventNode {
     NodeType ntype;
-    double ts;
+    int64_t ts;
     unsigned long tid;
     union {
         struct FEEData fee;

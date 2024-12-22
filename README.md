@@ -1,6 +1,6 @@
 # VizTracer
 
-[![build](https://github.com/gaogaotiantian/viztracer/workflows/build/badge.svg)](https://github.com/gaogaotiantian/viztracer/actions?query=workflow%3Abuild)  [![flake8](https://github.com/gaogaotiantian/viztracer/workflows/lint/badge.svg)](https://github.com/gaogaotiantian/viztracer/actions?query=workflow%3ALint)  [![readthedocs](https://img.shields.io/readthedocs/viztracer)](https://viztracer.readthedocs.io/en/stable/)  [![coverage](https://img.shields.io/codecov/c/github/gaogaotiantian/viztracer)](https://codecov.io/gh/gaogaotiantian/viztracer)  [![pypi](https://img.shields.io/pypi/v/viztracer.svg)](https://pypi.org/project/viztracer/)  [![support-version](https://img.shields.io/pypi/pyversions/viztracer)](https://img.shields.io/pypi/pyversions/viztracer)  [![license](https://img.shields.io/github/license/gaogaotiantian/viztracer)](https://github.com/gaogaotiantian/viztracer/blob/master/LICENSE)  [![commit](https://img.shields.io/github/last-commit/gaogaotiantian/viztracer)](https://github.com/gaogaotiantian/viztracer/commits/master)  [![twitter](https://img.shields.io/twitter/follow/viztracer?label=viztracer&style=flat&logo=twitter)](https://twitter.com/viztracer)
+[![build](https://github.com/gaogaotiantian/viztracer/workflows/build/badge.svg)](https://github.com/gaogaotiantian/viztracer/actions?query=workflow%3Abuild)  [![flake8](https://github.com/gaogaotiantian/viztracer/workflows/lint/badge.svg)](https://github.com/gaogaotiantian/viztracer/actions?query=workflow%3ALint)  [![readthedocs](https://img.shields.io/readthedocs/viztracer)](https://viztracer.readthedocs.io/en/stable/)  [![coverage](https://img.shields.io/codecov/c/github/gaogaotiantian/viztracer)](https://codecov.io/gh/gaogaotiantian/viztracer)  [![pypi](https://img.shields.io/pypi/v/viztracer.svg)](https://pypi.org/project/viztracer/)  [![Visual Studio Marketplace Version](https://img.shields.io/visual-studio-marketplace/v/gaogaotiantian.viztracer-vscode?logo=visual-studio)](https://marketplace.visualstudio.com/items?itemName=gaogaotiantian.viztracer-vscode)  [![support-version](https://img.shields.io/pypi/pyversions/viztracer)](https://img.shields.io/pypi/pyversions/viztracer)  [![license](https://img.shields.io/github/license/gaogaotiantian/viztracer)](https://github.com/gaogaotiantian/viztracer/blob/master/LICENSE)  [![commit](https://img.shields.io/github/last-commit/gaogaotiantian/viztracer)](https://github.com/gaogaotiantian/viztracer/commits/master)  [![sponsor](https://img.shields.io/badge/%E2%9D%A4-Sponsor%20me-%23c96198?style=flat&logo=GitHub)](https://github.com/sponsors/gaogaotiantian)
 
 VizTracer is a low-overhead logging/debugging/profiling tool that can trace and visualize your python code execution.
 
@@ -14,8 +14,8 @@ More help can be found in "Support - Controls".
 
 * Detailed function entry/exit information on timeline with source code
 * Super easy to use, no source code change for most features, no package dependency
-* Supports threading, multiprocessing, subprocess and async
-* Logs arbitrary function/variable using RegEx without code change
+* Low overhead, probably the fastest tracer in the market
+* Supports threading, multiprocessing, subprocess, async and PyTorch
 * Powerful front-end, able to render GB-level trace smoothly
 * Works on Linux/MacOS/Windows
 
@@ -31,15 +31,8 @@ pip install viztracer
 
 ### Command Line
 
-Assume you have a python script to run:
-
 ```sh
-python3 my_script.py arg1 arg2
-```
-
-You can simply use VizTracer by
-
-```sh
+# Instead of "python3 my_script.py arg1 arg2"
 viztracer my_script.py arg1 arg2
 ```
 
@@ -48,6 +41,13 @@ viztracer my_script.py arg1 arg2
 <summary>
 A <code>result.json</code> file will be generated, which you can open with <code>vizviewer</code>
 </summary>
+
+```sh
+# You can display all the files in a directory and open them in browser too
+vizviewer ./
+# For very large trace files, try external trace processor
+vizviewer --use_external_processor result.json
+```
 
 vizviewer will host an HTTP server on ``http://localhost:9001``. You can also open your browser and use that address.
 
@@ -67,40 +67,19 @@ vizviewer --once result.json
 
 ```sh
 vizviewer result.json
-# You can display all the files in a directory and open them in browser too
-vizviewer ./
-# For very large trace files, try external trace processor
-vizviewer --use_external_processor result.json
 ```
+
+A [VS Code Extension](https://marketplace.visualstudio.com/items?itemName=gaogaotiantian.viztracer-vscode)
+is available to make your life even easier.
+
+<p align="center">
+    <img src="https://github.com/gaogaotiantian/viztracer-vscode/raw/master/assets/demo.gif" />
+</p>
 
 <details>
 
 <summary>
-You can also generate standalone <code>html</code> file
-</summary>
-
-```sh
-viztracer -o result.html my_script.py arg1 arg2
-```
-
-The standalone HTML file is powered by [catapult](https://github.com/catapult-project/catapult) trace viewer which is an old tool Google made and is being replaced by [Perfetto](https://perfetto.dev/) gradually.
-
-Catapult trace viewer is sluggish with larger traces and is not actively maintained. It is recommended to use Perfetto instead.
-
-However, if you really need a standalone HTML file, this is the only option. Perfetto does not support standalone files.
-
-You can use vizviewer to open the html file as well, just to make the interface consistent
-
-```sh
-vizviewer result.html
-```
-
-</details>
-
-<details>
-
-<summary>
-Or add <code>--open</code> to open the reports right after tracing
+Add <code>--open</code> to open the reports right after tracing
 </summary>
 
 ```sh
@@ -163,6 +142,20 @@ If you are using Jupyter, you can use viztracer cell magics.
 
 A ``VizTracer Report`` button will appear after the cell and you can click it to view the results
 
+### PyTorch
+
+VizTracer can log native calls and GPU events of PyTorch (based on `torch.profiler`) with
+``--log_torch``.
+
+```python
+with VizTracer(log_torch=True) as tracer:
+    # Your torch code
+```
+
+```sh
+viztracer --log_torch your_model.py
+```
+
 ## Advanced Usage
 
 ### Trace Filter
@@ -201,9 +194,11 @@ VizTracer supports inserting custom events while the program is running. This wo
 
 ### Multi Thread Support
 
-VizTracer supports python native ```threading``` module without the need to do any modification to your code. Just start ```VizTracer``` before you create threads and it will just work.
+For Python3.12+, VizTracer supports Python-level multi-thread tracing without the need to do any modification to your code.
 
-For other multi-thread scenarios, you can use ``enable_thread_tracing()`` to let VizTracer know about the thread to trace it.
+For versions before 3.12, VizTracer supports python native ```threading``` module. Just start ```VizTracer``` before you create threads and it will just work.
+
+For other multi-thread scenarios, you can use ``enable_thread_tracing()`` to notice VizTracer about the thread to trace it.
 
 [![example_img](https://github.com/gaogaotiantian/viztracer/blob/master/img/multithread_example.png)](https://github.com/gaogaotiantian/viztracer/blob/master/img/multithread_example.png)
 
@@ -230,11 +225,7 @@ Refer to [async docs](https://viztracer.readthedocs.io/en/stable/concurrency.htm
 
 ### Flamegraph
 
-VizTracer can show flamegraph of traced data.
-
-```sh
-vizviewer --flamegraph result.json
-```
+Perfetto supports native flamegraph, just select slices on the UI and choose "Slice Flamegraph".
 
 [![example_img](https://github.com/gaogaotiantian/viztracer/blob/master/img/flamegraph.png)](https://github.com/gaogaotiantian/viztracer/blob/master/img/flamegraph.png)
 
@@ -248,52 +239,34 @@ Refer to [remote attach docs](https://viztracer.readthedocs.io/en/stable/remote_
 
 VizTracer needs to dump the internal data to json format. It is recommended for the users to install ```orjson```, which is much faster than the builtin ```json``` library. VizTracer will try to import ```orjson``` and fall back to the builtin ```json``` library if ```orjson``` does not exist.
 
-## Virtual Debug
-
-You can virtually debug your program with you saved json report. The interface is very similar to ```pdb```. Even better, you can **go back in time**
-because VizTracer has all the info recorded for you.
-
-```sh
-vdb <your_json_report>
-```
-
-Refer to the [docs](https://viztracer.readthedocs.io/en/stable/virtual_debug.html) for detailed commands
-
 ## Performance
 
-VizTracer will introduce 2x to 3x overhead in the worst case. The overhead is much better if there are less function calls or if filters are applied correctly.
+VizTracer puts in a lot of effort to achieve low overhead. The actual performance impact largely depends on your application.
+For typical codebases, the overhead is expected to be below 1x. If your code has infrequent function calls,
+the overhead could be minimal.
 
 <details>
 
 <summary>
-An example run for test_performance with Python 3.8 / Ubuntu 18.04.4 on Github VM
+Detailed explanation
 </summary>
 
-```sh
-fib:
-0.000678067(1.00)[origin]
-0.019880272(29.32)[py] 0.011103901(16.38)[parse] 0.021165599(31.21)[json]
-0.001344933(1.98)[c] 0.008181911(12.07)[parse] 0.015789866(23.29)[json]
-0.001472846(2.17)[cProfile]
+The overhead introduced by VizTracer is basically a fixed amount of time during function entry and exit, so the more time spent on
+function entries and exits, the more overhead will be observed. A pure recursive ```fib``` function could suffer 3x-4x overhead
+on Python3.11+ (when the Python call is optimized, before that Python call was slower so the overhead ratio would be less).
 
-hanoi     (6148, 4100):
-0.000550255(1.00)[origin]
-0.016343521(29.70)[py] 0.007299123(13.26)[parse] 0.016779364(30.49)[json]
-0.001062505(1.93)[c] 0.006416136(11.66)[parse] 0.011463236(20.83)[json]
-0.001144914(2.08)[cProfile]
+In the real life scenario, your code should not spend too much time on function calls (they don't really do anything useful), so
+the overhead would be much smaller.
 
-qsort     (8289, 5377):
-0.002817679(1.00)[origin]
-0.052747431(18.72)[py] 0.011339725(4.02)[parse] 0.023644345(8.39)[json]
-0.004767673(1.69)[c] 0.008735166(3.10)[parse] 0.017173703(6.09)[json]
-0.007248019(2.57)[cProfile]
+Many techniques are applied to minimize the overall overhead during code execution to reduce the inevitable skew introduced by
+VizTracer (the report saving part is not as critical). For example, VizTracer tries to use the CPU timestamp counter instead of
+a syscall to get the time when available. On Python 3.12+, VizTracer uses ```sys.monitoring``` which has less overhead than
+```sys.setprofile```. All of the efforts made it observably faster than ```cProfile```, the Python stdlib profiler.
 
-slow_fib  (1135, 758):
-0.028759652(1.00)[origin]
-0.033994071(1.18)[py] 0.001630461(0.06)[parse] 0.003386635(0.12)[json]
-0.029481623(1.03)[c] 0.001152415(0.04)[parse] 0.002191417(0.08)[json]
-0.028289305(0.98)[cProfile]
-```
+However, VizTracer is a tracer, which means it has to record every single function entry and exit, so it can't be as fast as
+the sampling profilers - they are not the same thing. With the extra overhead, VizTracer provides a lot more information than
+normal sampling profilers.
+
 </details>
 
 ## Documentation
@@ -306,6 +279,6 @@ Please send bug reports and feature requests through [github issue tracker](http
 
 ## License
 
-Copyright Tian Gao, 2020.
+Copyright 2020-2024 Tian Gao.
 
 Distributed under the terms of the  [Apache 2.0 license](https://github.com/gaogaotiantian/viztracer/blob/master/LICENSE).

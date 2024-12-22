@@ -6,7 +6,6 @@ import atexit
 import contextlib
 import functools
 import html
-from http import HTTPStatus
 import http.server
 import io
 import json
@@ -15,19 +14,19 @@ import socket
 import socketserver
 import subprocess
 import sys
+import traceback
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional
 import urllib.parse
-
-from .flamegraph import FlameGraph
+from http import HTTPStatus
+from typing import Any, Callable, Optional
 
 
 dir_lock = threading.Lock()
 
 
 @contextlib.contextmanager
-def chdir_temp(d):
+def chdir_temp(d: str):
     with dir_lock:
         curr_cwd = os.getcwd()
         os.chdir(d)
@@ -76,9 +75,7 @@ class PerfettoHandler(HttpHandler):
         self.server.last_request = self.path
         self.server_thread.notify_active()
         if self.path.endswith("vizviewer_info"):
-            info = {
-                "is_flamegraph": self.server_thread.flamegraph
-            }
+            info = {}
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()
@@ -99,13 +96,6 @@ class PerfettoHandler(HttpHandler):
                 self.path = f"/{filename}"
                 self.server.trace_served = True
                 return super().do_GET()
-        elif self.path.endswith("flamegraph"):
-            self.send_response(200)
-            self.send_header("Content-type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(self.server_thread.fg_data).encode("utf-8"))
-            self.wfile.flush()
-            self.server.trace_served = True
         else:
             self.directory = os.path.join(os.path.dirname(__file__), "web_dist")
             with chdir_temp(self.directory):
@@ -185,14 +175,14 @@ class DirectoryHandler(HttpHandler):
             displaypath = urllib.parse.unquote(path)
         displaypath = html.escape(displaypath, quote=False)
         enc = sys.getfilesystemencoding()
-        title = 'Directory listing for %s' % displaypath
+        title = f'Directory listing for {displaypath}'
         r.append('<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" '
                  '"http://www.w3.org/TR/html4/strict.dtd">')
         r.append('<html>\n<head>')
         r.append('<meta http-equiv="Content-Type" '
                  'content="text/html; charset=%s">' % enc)
-        r.append('<title>%s</title>\n</head>' % title)
-        r.append('<body>\n<h1>%s</h1>' % title)
+        r.append(f'<title>{title}</title>\n</head>')
+        r.append(f'<body>\n<h1>{title}</h1>')
         r.append('<hr>\n<ul>')
         for name in list:
             fullname = os.path.join(path, name)
@@ -224,7 +214,7 @@ class DirectoryHandler(HttpHandler):
         f.write(encoded)
         f.seek(0)
         self.send_response(HTTPStatus.OK)
-        self.send_header("Content-type", "text/html; charset=%s" % enc)
+        self.send_header("Content-type", f"text/html; charset={enc}")
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         return f
@@ -240,15 +230,16 @@ class ExternalProcessorProcess:
                 sys.executable,
                 self.trace_processor_path,
                 self.path,
-                "-D"
+                "-D",
             ],
-            stderr=subprocess.PIPE
+            stderr=subprocess.PIPE,
         )
         atexit.register(self.stop)
         self._wait_start()
 
     def _wait_start(self):
         print("Loading and parsing trace data, this could take a while...")
+        assert self._process.stderr is not None
         while True:
             line = self._process.stderr.readline().decode("utf-8")
             if "This server can be used" in line:
@@ -275,7 +266,6 @@ class ServerThread(threading.Thread):
             path: str,
             port: int = 9001,
             once: bool = False,
-            flamegraph: bool = False,
             use_external_processor: bool = False,
             timeout: float = 10,
             quiet: bool = False) -> None:
@@ -285,10 +275,9 @@ class ServerThread(threading.Thread):
         self.timeout = timeout
         self.quiet = quiet
         self.link = f"http://127.0.0.1:{self.port}"
-        self.flamegraph = flamegraph
         self.use_external_procesor = use_external_processor
         self.externel_processor_process: Optional[ExternalProcessorProcess] = None
-        self.fg_data: Optional[List[Dict[str, Any]]] = None
+        self.fg_data: Optional[list[dict[str, Any]]] = None
         self.file_info = None
         self.httpd: Optional[VizViewerTCPServer] = None
         self.last_active = time.time()
@@ -298,26 +287,21 @@ class ServerThread(threading.Thread):
         super().__init__(daemon=True)
 
     def run(self) -> None:
-        self.retcode = self.view()
-        # If it returns from view(), also set ready
-        self.ready.set()
+        try:
+            self.retcode = self.view()
+        except Exception:
+            self.retcode = 1
+            traceback.print_exc()
+        finally:
+            # If it returns from view(), also set ready
+            self.ready.set()
 
     def view(self) -> int:
         # Get file data
         filename = os.path.basename(self.path)
 
         Handler: Callable[..., HttpHandler]
-        if self.flamegraph:
-            if filename.endswith("json"):
-                with open(self.path, encoding="utf-8", errors="ignore") as f:
-                    trace_data = json.load(f)
-                fg = FlameGraph(trace_data)
-                self.fg_data = fg.dump_to_perfetto()
-                Handler = functools.partial(PerfettoHandler, self)
-            else:
-                print(f"Do not support flamegraph for file type {filename}")
-                return 1
-        elif filename.endswith("json"):
+        if filename.endswith("json"):
             trace_data = None
             if self.use_external_procesor:
                 Handler = functools.partial(ExternalProcessorHandler, self)
@@ -361,12 +345,9 @@ class ServerThread(threading.Thread):
 
     def is_port_in_use(self) -> bool:
         with contextlib.closing(
-            socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        ) as sock:
-            if sock.connect_ex(('127.0.0.1', self.port)) == 0:
-                return True
-            else:
-                return False
+                socket.socket(socket.AF_INET,
+                              socket.SOCK_STREAM)) as sock:
+            return sock.connect_ex(('127.0.0.1', self.port)) == 0
 
 
 class DirectoryViewer:
@@ -375,17 +356,15 @@ class DirectoryViewer:
             path: str,
             port: int,
             server_only: bool,
-            flamegraph: bool,
             timeout: int,
             use_external_processor: bool) -> None:
         self.base_path = os.path.abspath(path)
         self.port = port
         self.server_only = server_only
-        self.flamegraph = flamegraph
         self.timeout = timeout
         self.use_external_processor = use_external_processor
         self.max_port_number = 10
-        self.servers: Dict[str, ServerThread] = {}
+        self.servers: dict[str, ServerThread] = {}
 
     def get_link(self, path: str) -> str:
         path = os.path.join(self.base_path, path)
@@ -408,7 +387,6 @@ class DirectoryViewer:
                 t = ServerThread(
                     path,
                     port=port,
-                    flamegraph=self.flamegraph,
                     use_external_processor=self.use_external_processor,
                     quiet=True)
                 t.start()
@@ -471,22 +449,24 @@ def viewer_main() -> int:
     parser.add_argument("--timeout", nargs="?", type=int, default=10,
                         help="Timeout in seconds to stop the server without trace data requests")
     parser.add_argument("--flamegraph", default=False, action="store_true",
-                        help="Show flamegraph of data")
+                        help=argparse.SUPPRESS)
     parser.add_argument("--use_external_processor", default=False, action="store_true",
                         help="Use the more powerful external trace processor instead of WASM")
 
     options = parser.parse_args(sys.argv[1:])
     f = options.file[0]
 
+    if options.flamegraph:
+        print("--flamegraph is removed because the front-end supports native flamegraph now.")
+        print("You can select slices in the UI and do 'Slice Flamegraph'.")
+        return 1
+
     if options.use_external_processor:
         # Perfetto trace processor only accepts requests from localhost:10000
         options.port = 10000
-        # external trace process won't work with once or flamegraph or directory
+        # external trace process won't work with once or directory
         if options.once:
             print("You can't use --once with --use_external_processor")
-            return 1
-        if options.flamegraph:
-            print("You can't use --flamegraph with --use_external_processor")
             return 1
         if os.path.isdir(f):
             print("You can't use --use_external_processor on a directory")
@@ -499,9 +479,8 @@ def viewer_main() -> int:
                 path=f,
                 port=options.port,
                 server_only=options.server_only,
-                flamegraph=options.flamegraph,
                 timeout=options.timeout,
-                use_external_processor=options.use_external_processor
+                use_external_processor=options.use_external_processor,
             )
             directory_viewer.run()
         finally:
@@ -514,9 +493,8 @@ def viewer_main() -> int:
                 path,
                 port=options.port,
                 once=options.once,
-                flamegraph=options.flamegraph,
                 timeout=options.timeout,
-                use_external_processor=options.use_external_processor
+                use_external_processor=options.use_external_processor,
             )
             server.start()
             server.ready.wait()
@@ -542,4 +520,4 @@ def viewer_main() -> int:
 
 
 if __name__ == "__main__":
-    exit(viewer_main())
+    sys.exit(viewer_main())

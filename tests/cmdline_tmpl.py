@@ -7,7 +7,10 @@ import os
 import shutil
 import subprocess
 import sys
+import textwrap
 import time
+from typing import Optional
+
 from .base_tmpl import BaseTmpl
 
 
@@ -23,7 +26,7 @@ fib(5)
 class CmdlineTmpl(BaseTmpl):
     def build_script(self, script, name="cmdline_test.py"):
         with open(name, "w") as f:
-            f.write(script)
+            f.write(textwrap.dedent(script))
 
     def cleanup(self, output_file="result.json", script_name="cmdline_test.py"):
         if os.path.exists(script_name):
@@ -43,7 +46,7 @@ class CmdlineTmpl(BaseTmpl):
 
     def template(self,
                  cmd_list,
-                 expected_output_file="result.json",
+                 expected_output_file: Optional[str] = "result.json",
                  success=True,
                  script=file_fib,
                  script_name="cmdline_test.py",
@@ -117,20 +120,21 @@ class CmdlineTmpl(BaseTmpl):
                 logging.error(f"stdout: {e.stdout}")
                 logging.error(f"stderr: {e.stderr}")
                 raise e
-        if not (success ^ (result.returncode != 0)):
+        expected = (success ^ (result.returncode != 0))
+        if not expected:
             logging.error(f"return code: {result.returncode}")
             logging.error(f"stdout:\n{result.stdout.decode('utf-8')}")
             logging.error(f"stderr:\n{result.stderr.decode('utf-8')}")
-        self.assertTrue(success ^ (result.returncode != 0))
-        if success:
-            if expected_output_file:
+        self.assertTrue(expected)
+        if expected:
+            if success and expected_output_file:
                 if type(expected_output_file) is list:
                     for f in expected_output_file:
                         self.assertFileExists(f)
                 elif type(expected_output_file) is str:
                     self.assertFileExists(expected_output_file)
 
-            if expected_entries:
+            if success and expected_entries:
                 assert (type(expected_output_file) is str and expected_output_file.split(".")[-1] == "json")
                 with open(expected_output_file) as f:
                     data = json.load(f)

@@ -9,7 +9,9 @@ import os
 import random
 import tempfile
 import time
+
 from viztracer import VizTracer
+
 from .base_tmpl import BaseTmpl
 
 
@@ -45,7 +47,7 @@ class BenchmarkTimer:
             end_time = time.perf_counter()
             data = {
                 "dur": end_time - start_time,
-                "section": section
+                "section": section,
             }
             if baseline:
                 self.timer_baseline = data
@@ -56,7 +58,7 @@ class BenchmarkTimer:
 
     def print_result(self):
         def time_str(baseline, experiment):
-            return "{:.9f}({:.2f})[{}]".format(experiment["dur"], experiment["dur"] / baseline["dur"], experiment["section"])
+            return f"{experiment['dur']:.9f}({experiment['dur'] / baseline['dur']:.2f})[{experiment['section']}]"
         for experiments in self.timer_experiments.values():
             logging.info(" ".join([time_str(self.timer_baseline, experiment) for experiment in experiments]))
 
@@ -73,20 +75,6 @@ class TestPerformance(BaseTmpl):
         # the original speed
         with bm_timer.time("baseline", "baseline", baseline=True):
             func()
-
-        # With viztracer + c tracer + vdb
-        tracer = VizTracer(verbose=0, vdb=True)
-        tracer.start()
-        with bm_timer.time("c+vdb", "c+vdb"):
-            func()
-        tracer.stop()
-        with bm_timer.time("c+vdb", "parse"):
-            tracer.parse()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            ofile = os.path.join(tmpdir, "result.json")
-            with bm_timer.time("c+vdb", "save"):
-                tracer.save(output_file=ofile)
-        tracer.clear()
 
         # With viztracer + c tracer
         tracer = VizTracer(verbose=0)
@@ -186,9 +174,9 @@ class TestPerformance(BaseTmpl):
         self.do_one_function(list_operation)
 
     def test_float(self):
-        from math import sin, cos, sqrt
+        from math import cos, sin, sqrt
 
-        class Point(object):
+        class Point():
             __slots__ = ('x', 'y', 'z')
 
             def __init__(self, i):
@@ -197,7 +185,7 @@ class TestPerformance(BaseTmpl):
                 self.z = (x * x) / 2
 
             def __repr__(self):
-                return "<Point: x=%s, y=%s, z=%s>" % (self.x, self.y, self.z)
+                return f"<Point: x={self.x}, y={self.y}, z={self.z}>"
 
             def normalize(self):
                 x = self.x
@@ -240,7 +228,7 @@ class TestFilterPerformance(BaseTmpl):
             func()
             baseline = t.get_time()
         tracer.stop()
-        tracer.cleanup()
+        tracer.clear()
 
         tracer.include_files = ["/"]
         tracer.start()
@@ -248,7 +236,7 @@ class TestFilterPerformance(BaseTmpl):
             func()
             include_files = t.get_time()
         tracer.stop()
-        tracer.cleanup()
+        tracer.clear()
 
         tracer.include_files = []
         tracer.max_stack_depth = 200
@@ -257,12 +245,12 @@ class TestFilterPerformance(BaseTmpl):
             func()
             max_stack_depth = t.get_time()
         tracer.stop()
-        tracer.cleanup()
+        tracer.clear()
 
         logging.info("Filter performance:")
-        logging.info("Baseline:        {:.9f}(1)".format(baseline))
-        logging.info("Include:         {:.9f}({:.2f})".format(include_files, include_files / baseline))
-        logging.info("Max stack depth: {:.9f}({:.2f})".format(max_stack_depth, max_stack_depth / baseline))
+        logging.info(f"Baseline:        {baseline:.9f}(1)")
+        logging.info(f"Include:         {include_files:.9f}({include_files / baseline:.2f})")
+        logging.info(f"Max stack depth: {max_stack_depth:.9f}({max_stack_depth / baseline:.2f})")
 
     def test_hanoi(self):
         def hanoi():

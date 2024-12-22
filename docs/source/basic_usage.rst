@@ -61,11 +61,12 @@ Three types of files are supported, html, json and gz(gzip of json file).
     viztracer -o other_name.json my_script.py
     viztracer -o other_name.json.gz my_script.py
 
-You can also show flamegraph from ``result.json`` file
+You can make viztracer to generate a unique name for the output file by using ``-u`` or ``--unique_output_file``
 
 .. code-block::
 
-    vizviewer --flamegraph result.json
+    viztracer -u my_script.py
+    viztracer --output_dir ./my_reports -u my_script.py
 
 Inline
 ------
@@ -110,7 +111,41 @@ If you are using Jupyter, you can use viztracer cell magics.
     %%viztracer
     # Your code after
 
-A ``Show VizTracer Report`` button will appear after the cell and you can click it to view the results
+.. code-block:: python
+
+    # you can define arguments of VizTracer in magic
+    %%viztracer -p 8888
+    # Your code after
+
+A ``Show VizTracer Report`` button will appear after the cell and you can click it to view the results.
+
+Cell magic ``%%viztracer`` supports some of the command line arguments:
+
+* ``--port``
+* ``--output_file``
+* ``--max_stack_depth``
+* ``--ignore_c_function``
+* ``--ignore_frozen``
+* ``--log_func_args``
+* ``--log_print``
+* ``--log_sparse``
+
+
+PyTorch
+-------
+
+VizTracer can log native calls and GPU events of PyTorch (based on ``torch.profiler``) with
+``--log_torch``.
+
+.. code-block:: python
+
+    with VizTracer(log_torch=True) as tracer:
+        # Your torch code
+
+.. code-block::
+
+    viztracer --log_torch your_model.py
+
 
 Display Report
 --------------
@@ -151,12 +186,6 @@ You can serve your HTTP server on a different port with ``--port`` or its equiva
 
     vizviewer --port 10000 result.json
 
-You can also show flamegraph of the result
-
-.. code-block::
-
-    vizviewer --flamegraph result.json
-
 You can use the external trace processor with ``--use_external_processor``, which does not have the
 RAM limits as the browser. This is helpful when you try to open a large trace file.
 
@@ -181,12 +210,8 @@ Circular Buffer Size
 --------------------
 
 VizTracer uses a circular buffer to store the entries. When there are too many entries, it will only store the latest ones so you know what happened
-recently. The default buffer size is 1,000,000(number of entries), which takes about 150MiB disk space. You can specify this when you instantiate a ``VizTracer`` object
-
-Notice it also takes a significant amount of RAM when VizTracer is tracing the program.
-
-VizTracer will preallocate about ``tracer_entries * 100B`` RAM for circular buffer. It also requires about ``1-2MB`` per 10k entries to
-dump the json file.
+recently. The default buffer size is 1,000,000(number of entries), which takes about 150MiB disk space.
+You can specify this when you instantiate a ``VizTracer`` object or through CLI.
 
 .. code-block:: python
 
@@ -197,6 +222,11 @@ OR
 .. code-block:: python
 
     tracer = VizTracer(tracer_entries=500000)
+
+Notice it also takes a significant amount of RAM when VizTracer is tracing the program.
+
+VizTracer will preallocate about ``tracer_entries * 100B`` RAM for circular buffer. It also requires about ``1-2MB`` per 10k entries to
+dump the json file.
 
 Configuration file
 ------------------
@@ -241,16 +271,19 @@ this usage.
 
     viztracer --align_combine run1.json run2.json -o compare_report.json
 
-Debug Your Saved Report
------------------------
+Compress Your Report
+--------------------
 
-VizTracer allows you to debug your json report just like pdb. You can understand how your program is executed by 
-interact with it. Even better, you can **go back in time** because you know what happened before. 
+VizTracer supports compressing your json report. The general compression ratio is about 50:1 to 100:1 for a large report.
 
-**This feature will be removed from 0.16.0**
+You can compress your report with ``--compress``.
 
 .. code-block:: 
 
-    vdb <your_json_report>
+    viztracer --compress result.json -o result.cvf 
 
-For detailed commands, please refer to :doc:`virtual_debug`
+You can also decompress your report with ``--decompress``
+
+.. code-block:: 
+
+    viztracer --decompress result.cvf -o result.json 
